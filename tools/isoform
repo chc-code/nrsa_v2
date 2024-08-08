@@ -1,0 +1,70 @@
+#! /usr/bin/env python3
+"""
+get the alternative isoform of a gene for different conditions regarding the pp count
+"""
+
+import os, sys, re
+import pandas as pd
+
+def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
+    """
+    get the alternative isoform across conditions
+    1. get the genes with multiple isoforms
+    2. for transcript, get the ppc sum of conditon1 and condition2,  compare the two ppc_sum. if the direction is different between 2 isoforms, then it is alternative isoform. e.g. in isoform1, ppc_sum_conditoin1 > ppc_sum_condition2, in isoform2, ppc_sum_conditoin1 < ppc_sum_condition2
+    fn = count_pp_gb.txt
+    """
+    
+    if 'normalized' in fn:
+        norm_flag = '.norm'
+    else:
+        norm_flag = ''
+    data = pd.read_csv(fn, sep='\t')
+    #  columns = "Transcript\tGene\tchr\tstart\tend\tstrand"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
+    # only keep the genes with multiple isoforms with different TSS
+    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
+    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
+
+    cols_orig = list(data.columns)
+    cols_ppc_all = [i for i in cols_orig if i.startswith('ppc_')]
+
+    sam_list = [re.sub('^ppc_', '', _) for _ in cols_ppc_all]
+    sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
+    
+    cols_ppc1 = [f'ppc_{sam}' for sam in sam1]
+    cols_ppc2 = [f'ppc_{sam}' for sam in sam2]
+    
+    data['ppc_sum1'] = data[cols_ppc1].sum(axis=1)
+    data['ppc_sum2'] = data[cols_ppc2].sum(axis=1)
+    # exclude transcripts with same ppc_sum1 and ppc_sum2
+    data = data.loc[data['ppc_sum1'] != data['ppc_sum2']]
+    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
+    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
+
+    data = data.sort_values(['Gene', 'chr', 'start'])
+
+    # for the comparison column, the value can be 1, 0 or -1
+    # if ppc_sum1 > ppc_sum2, then 1, if ppc_sum1 < ppc_sum2, then -1, if ppc_sum1 == ppc_sum2, then 0
+    data['comparison'] = data['ppc_sum1'].sub(data['ppc_sum2']).apply(lambda x: 1 if x > 0 else -1)
+    
+    # per gene, keep only the genes with different comparison values
+    data = data.groupby('Gene').filter(lambda x: x['comparison'].nunique() > 1)
+    print('dumping result')
+    data.to_excel(f'{out_dir}/alternative_isoform{norm_flag}.xlsx', index=False)
+
+
+
+if __name__ == "__main__":
+    import argparse as arg
+    from argparse import RawTextHelpFormatter
+    ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
+    ps.add_argument('fn', help="""count_pp_gb.txt file path""")
+    ps.add_argument('rep1', help="""sample count for conditon1""",type=int)
+    ps.add_argument('rep2', help="""sample count for conditon2""", type=int)
+    ps.add_argument('-out_dir', '-o',  help="""output directory, default is current dir""")
+    args = ps.parse_args()
+    rep1 = args.rep1
+    rep2 = args.rep2
+    fn = args.fn
+    out_dir = args.out_dir if args.out_dir else os.getcwd()
+
+    get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2)

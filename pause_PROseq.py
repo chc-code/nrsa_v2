@@ -1,24 +1,17 @@
 #! /usr/bin/env python3
 """
-mappable site: one of [ATCGatcg] (unknown region [N] excluded)
-mapped site: mappable site covered by mapped reads
-peak in promoter region is defined as the first window with the highest number of read count.
-number of mappable sites (50 minus number of 'N') is used to calculate density of promoter
-number of mapped sites is used to calculate density of gene body 
-modified for PRO-seq, which uses 3' end of (rev-comp) reads to indicate pausing
-
+process PROseq data
 """
 import time
 s = time.time()
 import sys, os, re
 import pickle
 import json
-from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, draw_box_plot, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change
-from statsmodels.stats.multitest import multipletests
-time_cost = {}
 
+
+time_cost = {}
 now = time.time()
-print(f'loading dependencies done, time = {now - s:.2f}s')
+
 s = now
 
 def getlogger(fn_log=None, logger_name=None, nocolor=False):
@@ -105,7 +98,7 @@ def getargs():
     ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
     ps.add_argument('-o', help="""required, output/work directory""", nargs=1)
-    ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], default='hg19')
+    ps.add_argument('-organism', '-m', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", nargs=1)
 
     ps.add_argument('-gtf', help="""user specified GTF file, if not specified, will use the default GTF file for the organism""")
     ps.add_argument('-fa', help="""Full path for the fasta file for the genome. If not specified, will search under the fa folder under the package directory. e.g. organism is hg19, then the default fasta file should be fa/hg19.fa""")
@@ -121,7 +114,6 @@ def getargs():
     args = ps.parse_args()
     
     return args
-
 
 
 def seek(pos, padding=1000):
@@ -156,10 +148,14 @@ class Analysis:
                 logger.info(f'Making {lb} directory: {d}')
                 os.makedirs(d)
 
+        self.status = 0
+
         self.organism = args.organism
         self.genome = self.organism
-        self.status = 0
-        
+        if self.organism not in {'hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'}:
+            logger.error(f"Invalid organism provided: {self.organism}")
+            self.status = 1
+
         bed_idx_step = 50
         self.bed_idx_step = bed_idx_step
         
@@ -269,10 +265,49 @@ def bench(s, lb):
     return now
 
 
-def main():
-    # logger.info('started')
-    args = getargs()
+def main(terminal=True, args_like=None):
+    """
+    args_like: an object with attributes equiv to the argparse object, must specify when terminal=False
+    """
+    if terminal:
+        args = getargs()
+    elif not args_like:
+        logger.error("args_like must be provided when terminal=False")
+        return
+    else:
+        # check if the attributes are present
+        defined_attrs = vars(args_like)
+        required_attrs = {'in1', 'o', 'organism', 'gtf', 'fa', 'f1', 'f2', 'up', 'down', 'gb', 'min_gene_len', 'window', 'step', 'bench'}
+        
+        optional_attrs = {
+            'in2': None,
+            'gtf': None,
+            'fa': None,
+            'f1': None,
+            'f2': None,
+            'up': 500,
+            'down': 500,
+            'gb': 1000,
+            'min_gene_len': 1000,
+            'window': 50,
+            'step': 5,
+            'bench': False,
+        }
+        missing = required_attrs - set(defined_attrs)
+        if missing:
+            logger.error(f"Missing required attributes: {sorted(missing)}")
+            return
+        for attr, default in optional_attrs.items():
+            if attr not in defined_attrs:
+                setattr(args_like, attr, default)
+        args = args_like
+        
     benchmode = args.bench
+    
+    
+    from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, draw_box_plot, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR
+    
+    
     analysis = Analysis(args)
     # logger.info('building obj done')
     if analysis.status:
@@ -523,7 +558,7 @@ def main():
                     invalid_rows.add(idx)
         if len(valid_rows[0]) < 10:
             logger.warning(f'Number of rows with pvalue  less than 10, fn = {fn}')
-        fdr_all = multipletests(valid_rows[0], method='fdr_bh')[1]
+        fdr_all = calc_FDR(valid_rows[0])
         pvalue_fdr_str = sorted(zip(valid_rows[1], valid_rows[0], fdr_all), key=lambda x: x[2]) # sort by FDR
 
         fh_fdr = analysis.out_fls['fdr'][fn]['fh']

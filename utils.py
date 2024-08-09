@@ -11,20 +11,9 @@ import json, pickle
 import gzip
 from subprocess import Popen, PIPE
 import pandas as pd
-from matplotlib import pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-
-from scipy.stats import fisher_exact
-import statsmodels as sm
-from statsmodels.stats.multitest import multipletests
-
-from pydeseq2.dds import DeseqDataSet
-from pydeseq2.default_inference import DefaultInference
-from pydeseq2.ds import DeseqStats
-from pydeseq2.preprocessing import deseq2_norm_fit
+import numpy as np
 
 pw_code = os.path.dirname(os.path.realpath(__file__))
-
 
 
 class HiddenPrints:
@@ -521,6 +510,9 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     n_rep1 and n_rep2:  the replacates number for condition1 and conditon2
     n_rep2 is optional
     """
+    from matplotlib import pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    
     n_rep2 = n_rep2 or 0
     gn_list = set(gn_list) if gn_list else None
     # check the pause_PROseq.pl output files
@@ -662,6 +654,8 @@ def draw_heatmap_pindex(n_gene_cols, pw_out):
     """
     plot for the pindex change
     """
+    from matplotlib import pyplot as plt
+    
     fn_pindex_change = f'{pw_out}/known_gene/pindex_change.txt'
     if not os.path.exists(fn_pindex_change):
         logger.error(f'{fn_pindex_change} not found')
@@ -701,6 +695,8 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fls_ctrl, fls_case, genome, out_
     """
     draw heatmap for pp change
     """
+    from matplotlib import pyplot as plt
+    
     fn_pp_change = f'{pw_out}/known_gene/pp_change.txt'
     fno = f'{pw_out}/intermediate/genes_for_heatmap.pdf'
     # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
@@ -717,6 +713,7 @@ def groseq_fisherexact_pausing_for_gene(x, tssCountIndex, tssLengthIndex, genebo
     """
     Perform Fisher's exact test to calculate the p-value for the pausing index of each gene. x is a row of the pausing count dataset
     """
+    from scipy.stats import fisher_exact
     c1 = round(float(x[tssCountIndex]))
     c2 = round(float(x[genebodyCountIndex]))
     l1 = round(float(x[tssLengthIndex]))
@@ -741,6 +738,7 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
     """
     Perform Fisher's exact test to calculate the p-value for the comparison of pausing index between two genes or 2 conditions of the same gene
     """
+    from scipy.stats import fisher_exact
     c1 = round(float(tssCountGene1))
     c2 = round(float(gbCountGene1))
     c3 = round(float(tssCountGene2))
@@ -755,10 +753,16 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
     return p_value
 
 
-def calc_FDR(pvalues):
+def calc_FDR(pvalues, with_na=True):
     """
     Calculate the false discovery rate (FDR) using the Benjamini-Hochberg method
+    with_na, will first filter out the invalid pvalues, and then map the pvalues back to the original index
     """
+    
+    from statsmodels.stats.multitest import multipletests
+    if not with_na:
+        return multipletests(pvalues, method='fdr_bh')[1]
+    
     pvalues_valid = []
     idx_map = {}
     idx_valid_p = -1
@@ -768,7 +772,6 @@ def calc_FDR(pvalues):
         idx_valid_p += 1
         pvalues_valid.append(p)
         idx_map[idx_old] = idx_valid_p
-    
     
     fdr = multipletests(pvalues_valid, method='fdr_bh')[1]  # return is a tuple, (reject, corrected p-values, alphaSidak, alphaBonf )
     fdr_all = ['NA' if idx not in idx_map else fdr[idx_map[idx]] for idx in range(len(pvalues))]
@@ -785,6 +788,12 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     min_reads:  if a gene has less than min_reads in all samples, it will be removed
     ref_level,  the level used as reference in the comparison
     """
+    
+    
+    from pydeseq2.dds import DeseqDataSet
+    from pydeseq2.default_inference import DefaultInference
+    from pydeseq2.ds import DeseqStats
+    from pydeseq2.preprocessing import deseq2_norm_fit
     
     # data filtering
     
@@ -871,7 +880,7 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     return res_df, size_factors
 
 
-def filter_pp_gb(data, n_gene_cols, rep1, rep2, is_erna=False):
+def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     """
     reused by change_pp_gb_with_case and change_pindex
     """
@@ -902,7 +911,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, is_erna=False):
     idx_gene_cols = list(range(n_gene_cols))
     
     
-    if is_erna:
+    if skip_filtering:
         data_pass = data
         data_drop = pd.DataFrame()
         return col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
@@ -932,7 +941,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, is_erna=False):
     data_pass = data_pass.drop(columns=[_ for _ in data_pass.columns if _[:4] == 'tmp_'])
     data_drop = data_drop.drop(columns=[_ for _ in data_drop.columns if _[:4] == 'tmp_'])
 
-    return col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
+    return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
 
 def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None):
     # data = processed, count_pp_gb.txt, already removed the chr, start, end  and strand column, and already collapsed the transcripts with the same gene
@@ -944,7 +953,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         factor2 = []
     
     n_sam = rep1 + rep2
-    col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2)
 
     data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False)
     
@@ -989,42 +998,31 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     else:
         size_factors = 1 # size factor is 1 for the only sample
 
-    # get the normalized data
-    norm_factors = 1 / size_factors
-    ppc_norm = data.iloc[:, idx_ppc_combined] * norm_factors
-    ppd_norm = ppc_norm / window_size
-    ppd_norm.columns = [f'ppd_{_}' for _ in sam_list]
-    
-    gbc_norm = data.iloc[:, idx_gbc_combined] * norm_factors
-    gbd_norm = data.iloc[:, idx_gbd_combined] * norm_factors
-    data_normalized = pd.concat([data.iloc[:, :n_gene_cols], ppc_norm, ppd_norm, gbc_norm, gbd_norm], axis=1)
-    data_normalized.to_csv(f'{out_dir}/known_gene/normalized_pp_gb.txt', sep='\t', index=False)
-    
+    # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
     nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
     nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False)
 
+    return size_factors
+    
 
 
 
 def change_pp_gb_without_case(n_gene_cols, rep1, data, out_dir, window_size, factor_flag, factor1=None):
     if rep1 == 1:
-        idx_gbc = n_gene_cols + 1
-        idx_ppc = n_gene_cols
-        idx_gbd = n_gene_cols + 2
+        
+        col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2=0)
         idx_gene_cols = list(range(n_gene_cols))
         gene_cols = list(data.columns[idx_gene_cols])
-        gbc_sum = data.iloc[:, idx_gbc].sum()
-        data_pass = data.loc[(data.iloc[:, idx_ppc] > 0) & (data.iloc[:, idx_gbd] * 10_000_000 / gbc_sum > 0.004)]
+
         data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False)
-        data_normalized = pd.concat([data.iloc[:, :n_gene_cols], data.iloc[:, idx_ppc], data.iloc[:, idx_ppc] / window_size, data.iloc[:, [idx_gbc, idx_gbd]]], axis=1)
-        data_normalized.columns = gene_cols + ['ppc', 'ppd', 'gbc', 'gbd']
-        data_normalized.to_csv(f'{out_dir}/known_gene/normalized_pp_gb.txt', sep='\t', index=False)
-        sam_name = re.sub(r'^ppc_', '', data.columns[idx_ppc])
+        size_factors = 1
         with open(f'{out_dir}/intermediate/nf.txt', 'w') as f:
-            f.write(f'sample\tnfactor\n{sam_name}\t1\n')
+            f.write(f'sample\tnfactor\n{sam_list[0]}\t1\n')
+
+        return size_factors
     else:
-        change_pp_gb_with_case(n_gene_cols,rep1, 0, data, out_dir, window_size, factor_flag, factor1)
+        return change_pp_gb_with_case(n_gene_cols,rep1, 0, data, out_dir, window_size, factor_flag, factor1)
 
 
 def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
@@ -1032,8 +1030,13 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     get the alternative isoform across conditions
     1. get the genes with multiple isoforms
     2. for transcript, get the ppc sum of conditon1 and condition2,  compare the two ppc_sum. if the direction is different between 2 isoforms, then it is alternative isoform. e.g. in isoform1, ppc_sum_conditoin1 > ppc_sum_condition2, in isoform2, ppc_sum_conditoin1 < ppc_sum_condition2
-    fn = count_pp_gb.txt
+    fn = count_pp_gb.txt / normalized_pp_gb.txt
     """
+    
+    if 'normalized' in fn:
+        norm_flag = '.norm'
+    else:
+        norm_flag = ''
     data = pd.read_csv(fn, sep='\t')
     #  columns = "Transcript\tGene\tchr\tstart\tend\tstrand"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
     # only keep the genes with multiple isoforms with different TSS
@@ -1053,6 +1056,12 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     data['ppc_sum2'] = data[cols_ppc2].sum(axis=1)
     # exclude transcripts with same ppc_sum1 and ppc_sum2
     data = data.loc[data['ppc_sum1'] != data['ppc_sum2']]
+    
+    # exclude transcripts with ppc_sum1 and ppc_sum2 are both < 5
+    min_ppc_sum = 5
+    data = data.loc[(data['ppc_sum1'] >= min_ppc_sum) | (data['ppc_sum2'] >= min_ppc_sum)]
+    
+    # keep only genes still have multiple isoforms
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
 
@@ -1061,11 +1070,18 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     # for the comparison column, the value can be 1, 0 or -1
     # if ppc_sum1 > ppc_sum2, then 1, if ppc_sum1 < ppc_sum2, then -1, if ppc_sum1 == ppc_sum2, then 0
     data['comparison'] = data['ppc_sum1'].sub(data['ppc_sum2']).apply(lambda x: 1 if x > 0 else -1)
-    
     # per gene, keep only the genes with different comparison values
     data = data.groupby('Gene').filter(lambda x: x['comparison'].nunique() > 1)
-
-    data.to_csv(f'{out_dir}/known_gene/alternative_isoform.txt', sep='\t', index=False)
+    
+    # get the log2FC of ppc_sum1 and ppc_sum2, log2(ppc_sum2/ppc_sum1)
+    ratio = data['ppc_sum2'] / (data['ppc_sum1'].replace(0, np.nan))
+    data['log2FC'] = np.log2(ratio.replace(0, np.nan))
+    
+    # drop comparison column
+    data = data.drop('comparison', axis=1)
+    
+    print('dumping result')
+    data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t')
 
 def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
     """
@@ -1087,7 +1103,8 @@ def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, f
     if err:
         return 1
     
-    data = pd.read_csv(fn, sep='\t')
+    data_raw = pd.read_csv(fn, sep='\t')
+    data = data_raw.copy()
     data = data.iloc[:, list(range(n_gene_cols)) + list(range(n_gene_cols + 4, len(data.columns)))]
     cols = data.columns
     cols_ppc = [i for i in cols if i.startswith('ppc_')]
@@ -1117,9 +1134,24 @@ def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, f
     
     if condition == 2:
         # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-        return change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
+        size_factors = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
     else:
-        return change_pp_gb_without_case(n_gene_cols, n_sam, data, out_dir)
+        size_factors = change_pp_gb_without_case(n_gene_cols, rep1, data, out_dir, window_size, factor_flag, factor1)
+
+    # get the normalized data
+    n_extra_cols = 4 # chr, start, end, strand
+    n_prev_cols = n_gene_cols + n_extra_cols
+    idx_cols, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
+    
+    norm_factors = 1 / size_factors
+    ppc_norm = data_raw.iloc[:, idx_ppc_combined] * norm_factors
+    ppd_norm = ppc_norm / window_size
+    ppd_norm.columns = [f'ppd_{_}' for _ in sam_list]
+    
+    gbc_norm = data_raw.iloc[:, idx_gbc_combined] * norm_factors
+    gbd_norm = data_raw.iloc[:, idx_gbd_combined] * norm_factors
+    data_normalized = pd.concat([data_raw.iloc[:, :n_prev_cols], ppc_norm, ppd_norm, gbc_norm, gbd_norm], axis=1)
+    data_normalized.to_csv(f'{out_dir}/known_gene/normalized_pp_gb.txt', sep='\t', index=False)
 
 
 def cmhtest(row, rep1, rep2):
@@ -1127,7 +1159,7 @@ def cmhtest(row, rep1, rep2):
     performs the Mantel-Haenszel test on a certain gene
     the row is like ppc_sam1, ppc_sam2, ppc_sam3, ppc_sam4, gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2, ...
     """
-    
+    import statsmodels as sm
     arr = []
     n_sam = rep1 + rep2
     for i in range(rep1):
@@ -1190,7 +1222,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         cols_keep = list(range(n_gene_cols)) + list(range(n_cols_prev, len(data.columns))) # drop the chr, start, end, strand columns
         data = data.iloc[:, cols_keep]
 
-    col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, is_erna=is_erna)
+    col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
     
     if n_sam == 2:
         # use fisher exact test

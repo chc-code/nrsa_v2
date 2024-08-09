@@ -1105,7 +1105,6 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         factor2 = np.array(factor2)
         norm_factors = np.concatenate([factor1, factor2])
         size_factors = 1 / norm_factors
-
     else:  # without normalization factors
         size_factors = None
     
@@ -1120,8 +1119,11 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
             res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
             res_df_full = pd.concat([res_df, data_drop_pp.iloc[:, idx_gene_cols]])
             res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False)
-    else:
+    elif rep1 == 1:
         size_factors = 1 # size factor is 1 for the only sample
+    elif rep2 == 0:
+        # control only
+        _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True)
 
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
@@ -1130,25 +1132,6 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
 
     return size_factors
     
-
-
-
-def change_pp_gb_without_case(n_gene_cols, rep1, data, out_dir, window_size, factor_flag, factor1=None):
-    if rep1 == 1:
-        
-        col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2=0)
-        idx_gene_cols = list(range(n_gene_cols))
-        gene_cols = list(data.columns[idx_gene_cols])
-
-        data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False)
-        size_factors = 1
-        with open(f'{out_dir}/intermediate/nf.txt', 'w') as f:
-            f.write(f'sample\tnfactor\n{sam_list[0]}\t1\n')
-
-        return size_factors
-    else:
-        return change_pp_gb_with_case(n_gene_cols,rep1, 0, data, out_dir, window_size, factor_flag, factor1)
-
 
 def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     """
@@ -1208,10 +1191,9 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     print('dumping result')
     data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t')
 
-def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
+def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
     """
     adapted from Rscript change_pp_gb.R
-    condition : 1 or 2, if there are case and control, codition = 2, if there are only control, condition = 1
     if factor_flag == 1, then will use these normalization factors, otherwise , will use DESeq2 to normalize the data
     fn = count_pp_gb.txt
 
@@ -1219,6 +1201,8 @@ def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, f
     # input file = my $out_pp_gb = $inter_dir . "count_pp_gb.txt";
     # columns = "Transcript\tGene\tchr\tstart\tend\tstrand"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
     err = 0
+    rep2 = rep2 or 0
+    
     if factor1 is not None and not isinstance(factor1, list):
         logger.error('factor1 should be a list')
         err = 1
@@ -1257,11 +1241,8 @@ def change_pp_gb(n_gene_cols, fn, out_dir, condition, rep1, rep2, window_size, f
     
     n_sam = rep1 + rep2
     
-    if condition == 2:
-        # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-        size_factors = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
-    else:
-        size_factors = change_pp_gb_without_case(n_gene_cols, rep1, data, out_dir, window_size, factor_flag, factor1)
+    # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
+    size_factors = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
 
     # get the normalized data
     n_extra_cols = 4 # chr, start, end, strand
@@ -1562,7 +1543,9 @@ def process_gtf(fn_gtf):
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)
 
-    logger.info(f'error in parsing gtf file: {err}')
+    err_total = sum(err.values())
+    if err_total:
+        logger.info(f'error in parsing gtf file: {err}')
     return res, err
 
 

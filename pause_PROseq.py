@@ -584,6 +584,7 @@ def main(args=None):
     # s = bench(s, 'calculate_FDR')
     
     # count_pp_gb
+    logger.info('Building count_pp_gb')
     prefix = 'longeRNA-' if analysis.longerna else ''
     fn_count_pp_gb = os.path.join(analysis.inter_dir, prefix + 'count_pp_gb.txt')
     header = analysis.gene_cols + ['chr', 'start', 'end', 'strand']
@@ -607,14 +608,13 @@ def main(args=None):
     # s = bench(s, 'count_pp_gb')
     
     # run change_pp_gb
-    condition = 2 if analysis.case_bed else 1
     rep1 = len(analysis.control_bed)
     rep2 = len(analysis.case_bed) if analysis.case_bed else 0
     window_size = analysis.config['window_size']
     factor1 = analysis.config['normalize_factor1']
     factor2 = analysis.config['normalize_factor2']
     factor_flag = 0 if factor1 is None else 1
-    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, condition, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
+    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
     
     # change_pindex
     fno_prefix = 'longeRNA-' if analysis.longerna else ''

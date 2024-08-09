@@ -7,7 +7,7 @@ s = time.time()
 import sys, os, re
 import pickle
 import json
-
+from types import SimpleNamespace
 
 time_cost = {}
 now = time.time()
@@ -95,10 +95,11 @@ def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
+    ps.add_argument('design_table',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
     ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
-    ps.add_argument('-o', help="""required, output/work directory""", nargs=1)
-    ps.add_argument('-organism', '-m', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", nargs=1)
+    ps.add_argument('-o', help="""required, output/work directory""", required=True)
+    ps.add_argument('-organism', '-m', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
 
     ps.add_argument('-gtf', help="""user specified GTF file, if not specified, will use the default GTF file for the organism""")
     ps.add_argument('-fa', help="""Full path for the fasta file for the genome. If not specified, will search under the fa folder under the package directory. e.g. organism is hg19, then the default fasta file should be fa/hg19.fa""")
@@ -143,7 +144,7 @@ class Analysis:
         self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
         
-        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.out_dir, self.inter_dir, self.known_gene_dir]):
+        for lb, d in zip(['Output', 'Intermediate', 'Known Genes', 'bed file folder'], [self.out_dir, self.inter_dir, self.known_gene_dir, f'{self.inter_dir}/bed']):
             if not os.path.exists(d):
                 logger.info(f'Making {lb} directory: {d}')
                 os.makedirs(d)
@@ -160,11 +161,11 @@ class Analysis:
         self.bed_idx_step = bed_idx_step
         
         # input files
-        in1 = process_input(args.in1, bed_idx_step=bed_idx_step) # return = [fn_bed, idx_bed, fn_lb]
+        in1 = process_input(self.out_dir, args.in1, bed_idx_step=bed_idx_step) # return = [fn_bed, idx_bed, fn_lb]
         if in1 is None:
             logger.error("Invalid input files provided for condition1")
             self.status = 1
-        in2 = process_input(args.in2, bed_idx_step=bed_idx_step)
+        in2 = process_input(self.out_dir, args.in2, bed_idx_step=bed_idx_step)
         self.control_bed = in1
         self.case_bed = in2
 
@@ -265,18 +266,15 @@ def bench(s, lb):
     return now
 
 
-def main(terminal=True, args_like=None):
+def main(args=None):
     """
-    args_like: an object with attributes equiv to the argparse object, must specify when terminal=False
+    args: an object with attributes equiv to the argparse object, must specify 
     """
-    if terminal:
+    if args is None:
         args = getargs()
-    elif not args_like:
-        logger.error("args_like must be provided when terminal=False")
-        return
     else:
         # check if the attributes are present
-        defined_attrs = vars(args_like)
+        defined_attrs = vars(args)
         required_attrs = {'in1', 'o', 'organism'}
         
         optional_attrs = {
@@ -296,15 +294,14 @@ def main(terminal=True, args_like=None):
         missing = required_attrs - set(defined_attrs)
         exist = required_attrs & set(defined_attrs)
         for attr in exist:
-            if getattr(args_like, attr) is None:
+            if getattr(args, attr) is None:
                 missing.add(attr)
         if missing:
             logger.error(f"Missing required attributes: {sorted(missing)}")
             return
         for attr, default in optional_attrs.items():
             if attr not in defined_attrs:
-                setattr(args_like, attr, default)
-        args = args_like
+                setattr(args, attr, default)
         
     benchmode = args.bench
     
@@ -664,92 +661,71 @@ def main(terminal=True, args_like=None):
     # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
     draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fn_glist, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, ref_fls=analysis.ref, region_size=5000, bin_size=200, outname='heatmap')
     
-    
-    
-    
+
     # modify here
     logger.info('debug exit')
     sys.exit(0)
-    
-    
-    
-    
-    
-    # compare the performance
-    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc', 'get_pro_summit', 'get_gene_seq',  'write_to_peak_file', 'fisher_exact', 'calculate_FDR', 'pre_fh_seek', 'fh_seek']
-    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc']
-    
-    # time_reference = {
-    #     "n_genes": 200,
-    #     "iterate_bed": 9.035804510116577,
-    #     "pre_fh_seek": 0.1330716609954834,
-    #     "fh_seek": 0.23243331909179688,
-    #     "get_mapped_reads": 9.544336795806885,
-    #     "get_pro_peak": 9.712411642074585,
-    #     "get_gb_peak": 0.0006918907165527344,
-    #     "fisher_exact": 0.4723787307739258,
-    #     "count_ATCG": 0.0016739368438720703,
-    #     "get_pro_summit": 0.002034902572631836,
-    #     "get_gene_seq": 0.06450319290161133,
-    #     "misc": 0.06480813026428223,
-    #     "check_none": 0.03544330596923828,
-    #     "write_to_peak_file": 0.01156163215637207,
-    #     "get_window_seq": 0.0007305145263671875,
-    #     "post_loop": 0.00772404670715332,
-    #     "count_pp_gb": 0.0016360282897949219,
-    #     "calculate_FDR": 0.0025238990783691406,
-    #     "add_to_pause_pvalue": 0.0015454292297363281,
-    #     "close file handle": 0.0005750656127929688,
-    #     "general_gene_info": 0.00041484832763671875,
-    #     "before bed loop": 0.00028777122497558594
-    # }
-    
-    # # based on bed index file chunk = 1000bp, do not split the strand, the initial setting
-    # line_count_reference = {
-    #     "skip_by_strand": 3974884,
-    #     "skip_before_region": 7703057,
-    #     "skip_pass_region": 251257,
-    #     "n_parsed": 1018026
-    # }
-    
-    # time_cost['n_genes'] = bench_max_gene
-    # tmp = {k: time_cost[k] for k in time_reference}
-    # print(json.dumps(tmp, indent=4))
-    
-    # tmp = {k: time_cost[k] for k in line_count_reference}
-    # print(json.dumps(tmp, indent=4))
-    
-    # line_ref = [time_reference[k] for k in keys]
-    # line1 = [round(time_cost[k], 5) for k in keys]
-    # ref_n_genes = time_reference['n_genes']
-    # line_ratio = [f'{round((_ / bench_max_gene) / (__ / ref_n_genes)*100, 1)}%' for _, __ in zip(line1, line_ref)]
-    # print('\t'.join(map(str, line1)))
-    # print('\t'.join(line_ratio))
-    
-    # print('\n\n')
-    
-    # for k in ['skip_by_strand', 'skip_before_region', 'skip_pass_region', 'n_parsed', 'total_get_mapped_reads_calls', 'total_get_peak_calls']:
-    #     ratio = time_cost[k] / line_count_reference.get(k, time_cost[k])
-    #     print(f'line_count - {k + ":":<26} {time_cost[k]:,} ({ratio:.1%})')
 
-    # if time_cost['skip_unkown']:
-    #     print(f'skip_unkown: n = {len(time_cost["skip_unkown"])}')
-    #     print('\n'.join(map(str, time_cost['skip_unkown'][:5])))
-
-    # with open(f'/Users/files/tmp1/nrsa/demo_data/get_peak_detail.chunk{analysis.bed_idx_step}.pkl', 'wb') as o:
-    #     tmp = {k: sorted(v) if isinstance(v, set) else v for k, v in time_cost['get_peak_detail'].items()}
-    #     pickle.dump(tmp, o)
-
-    # status = time_cost['get_peak_detail']
-
-    # for k in ['window_count',  'no_bed_chr']:
-    #     print(f'{k}: n = {status[k]}')
-    
-    # for k in ['no_bed_chunk_found', 'kept_reads_set', 'no_mapped_reads_window', 'no_mapped_reads_whole_region', 'inverse_byte_pos']:
-    #     print('\n\n')
-    #     print(f'{k}: n = {len(status[k])}')
-    #     print('\n'.join(map(str, sorted(status[k])[:5])))
+def get_new_args(args, update_dict):
+    args_dict = vars(args)
+    args_dict.update(update_dict)
+    return SimpleNamespace(**args_dict)
 
     
 if __name__ == "__main__":
-    main()
+    args = getargs()
+    print(args)
+    args.o = os.path.realpath(args.o[0])
+    args.organism = args.organism[0]
+    if args.in1 is not None:
+        logger.info('Processing input files')
+        # main()
+    elif args.design_table is not None:
+        group_info = {}  # key = group name, v = file list
+        comparison = []
+        groups_in_comparison = set()
+        group_info['null'] = []
+        with open(args.design_table) as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                if line.startswith('@@'):
+                    tmp = line[2:].strip().split('\t')
+                    if len(tmp) != 2:
+                        logger.error(f"Invalid comparison definition: {line}, should have 2 columns, col1 = case group, col2 = control group")
+                        sys.exit(1)
+                    comparison.append(tmp)
+                    groups_in_comparison |= set(tmp)
+                else:
+                    tmp = line.strip().split('\t')
+                    if len(tmp) != 2:
+                        logger.error(f"Invalid line: {line}, should have 2 columns, col1 = file path, col2 = group name")
+                        sys.exit(1)
+                    group_info.setdefault(tmp[1], []).append(tmp[0])
+            
+            group_not_defined = groups_in_comparison - set(group_info)
+            if group_not_defined:
+                logger.error(f"Groups in comparison not defined in the sample section: {sorted(group_not_defined)}")
+                sys.exit(1)
+            
+            # if no comparison defined, process each group separately
+            if len(comparison) == 0:
+                logger.error(f'No comparison defined in {args.design_table}, please use @@ to define the comparison .If need to process a group separately, use @@null\\tgroup_name')
+                sys.exit(1)
+            else:
+                for case, control in comparison:
+                    update_dict = {}
+                    update_dict['in1'] = group_info[control]
+                    update_dict['in2'] = group_info[case] or None
+                    out_dir = args.o or os.getcwd()
+                    comp_str = control if case == 'null' else f'{case}_vs_{control}'
+                    out_dir = os.path.join(out_dir, comp_str)
+                    update_dict['o'] = out_dir
+                    
+                    args_new = get_new_args(args, update_dict)
+                    logger.info(f'Processing {comp_str}')
+                    # main(args_new)
+    else:
+        logger.error("No input files provided, either use -in1 / in2 or provide a design table")
+        sys.exit(1)
+

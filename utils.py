@@ -170,7 +170,7 @@ def get_seqence_from_fa(idx, fh, chr_, start, end):
     fh.seek(start_byte)
     return fh.read(len1 + lines_span).replace('\n', '')
 
-def build_idx_for_bed(fn_bed, step=100):
+def build_idx_for_bed(fn_bed, fn_idx, step=100):
     """
     built the index for the bed file, the index file is in json format
     key1 = chr, key2 = position (by default, step size = 1000), value is the byte position in the bed file
@@ -196,7 +196,7 @@ def build_idx_for_bed(fn_bed, step=100):
                 chr_, start, end, strand = line[0], line[1], line[2], line[5]
                 # chr_, start, strand = line[0], line[1], line[5]
             except:
-                logger.error(f'invalid line format: {line}')
+                logger.error(f'{fn_bed}: invalid line format: {line}, position = {f.tell()}')
                 sys.exit(1)
             ires = res.setdefault(chr_, {}).setdefault(strand, {})
             read_end = int(start) + 1 if strand == '-' else int(end)
@@ -211,35 +211,10 @@ def build_idx_for_bed(fn_bed, step=100):
     res['chunks'] = chunks
     # update the chromosome name
     res = {refine_chr(k): v for k, v in res.items()}
-    lb = fn_bed.rsplit(".", 1)[0]
 
-    # adjust the byte position for the plus strand, make sure the byte position is the minimum of the byte position of the chunk and the chunks after
-    # position = {'smaller': 0, 'same': 0, 'larger': 0}
-    # max_possible_read_len = 2000
-    # chunk_look_after = max_possible_read_len // step + 1
-    # res_plus_new = {}
-    # for chr_, ires in res.items():
-    #     if chr_ in {'step', 'fn_lb', 'chunks'}:
-    #         continue
-    #     ires_plus = ires['+']
-        
-    #     ires_plus_new = res_plus_new.setdefault(chr_, {})
-    #     chunks = sorted(ires_plus.keys())
-    #     for i, ichunk in enumerate(chunks):
-    #         min_byte_pos_chunks_after = min([ires_plus[_] for _ in chunks[i: i+chunk_look_after]])
-    #         if min_byte_pos_chunks_after == ires_plus[ichunk]:
-    #             position['same'] += 1
-    #         elif min_byte_pos_chunks_after < ires_plus[ichunk]:
-    #             position['smaller'] += 1
-    #         else:
-    #             position['larger'] += 1
-    #         ires_plus_new[ichunk] = min_byte_pos_chunks_after
-    
-    fn_idx = f'{lb}.{step}.idx.pkl'
     with open(fn_idx, 'wb') as o:
         pickle.dump(res, o)
-    logger.info(f'build index for {os.path.basename(fn_bed)}, chunks = {chunks}')
-    # print(f'total chunks = {chunks}')
+    logger.info(f'Buildingn index done for {os.path.basename(fn_bed)}, chunks = {chunks}')
     return res
 
 def check_is_sorted(fn_bed):
@@ -1628,7 +1603,8 @@ def get_lb(fn):
     return fn.rsplit('/', 1)[-1].rsplit('.', 1)[0]
 
 
-def process_input(fls, bed_idx_step=100):
+
+def process_input(pwout, fls, bed_idx_step=100):
     """
     process input files, convert bam to bed if needed, and build the index for bed files
     return a list of [fn_bed, idx_bed, fn_lb]
@@ -1636,71 +1612,60 @@ def process_input(fls, bed_idx_step=100):
     if fls is None:
         return None
     err = 0
-    l_out = []
-    checked = False
+    res = []
+    lb_map = {}
     for fn in fls:
-        if fn.endswith('.bam'):
-            fn_new = re.sub(r'\.bam$', '.sorted.bed', fn)
-            if os.path.exists(fn_new):
-                # previously already converted
-                l_out.append(fn_new)
-                continue
-            # check bedtools installed or not
-            if not checked:
-                if os.system('bedtools --version') != 0:
-                    logger.error("bedtools is not installed, please install bedtools first")
-                    return None
-                checked = True
+        fn_lb = os.path.basename(fn).rsplit('.', 1)[0]
+        fn_bed_out = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
+        fn_bed_inplace = re.sub(r'\.(bed|bam)$', '.sorted.bed', fn)
+        fn_bed_idx = f'{pwout}/intermediate/bed/{fn_lb}.{bed_idx_step}.idx.pkl'
+        
+        def link_bed(fn_source):
+            os.system(f'ln -s {fn_source} {fn_bed_out}')
+        
+        if os.path.exists(fn_bed_out) and os.path.getsize(fn_bed_out) > 10:
+            pass # already converted
+        elif os.path.exists(fn_bed_inplace) and os.path.getsize(fn_bed_inplace) > 10:
+            link_bed(fn_bed_inplace)
+        elif fn.endswith('.bam'):
             logger.info(f'Converting {fn} to bed format')
-            cmd = f"bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_new}"
-            # run the cmd string above and check the return code and stdout stderr
+            cmd = f"bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_bed_out}"
             retcode = run_shell(cmd)
-            err = err or retcode
-            if not retcode:
-                l_out.append(fn_new)
-        elif fn.endswith('.bed'):
-            fn_new = re.sub(r'\.bed$', '.sorted.bed', fn)
-            if os.path.exists(fn_new):
-                l_out.append(fn_new)
+            if ret_code:
+                logger.error(f"Fail to convert {fn} to bed format")
+                err = 1
                 continue
-            if 'sorted.bed' in fn:
-                l_out.append(fn)
+        elif fn.endswith('.bed'):
+            logger.info(f'Checking if bed file is sorted: {fn}')
+            is_sorted = check_is_sorted(fn)
+            if is_sorted:
+                logger.info(f'File is already sorted')
+                link_bed(fn)
             else:
-                logger.info(f'Checking if file is sorted: {fn}')
-                is_sorted = check_is_sorted(fn)
-                if is_sorted:
-                    logger.info(f'File is already sorted')
-                    os.system(f'ln -s {fn} {fn_new}')
-                    l_out.append(fn_new)
-                else:
-                    logger.info(f'File is not sorted, now sorting it...')
-                    cmd = f"bedtools sort -i {fn} > {fn_new}"
-                    retcode = run_shell(cmd)
-                    err = err or retcode
-                    if not retcode:
-                        l_out.append(fn_new)
+                logger.info(f'File is not sorted, now sorting it...')
+                cmd = f"bedtools sort -i {fn} > {fn_bed_out}"
+                retcode = run_shell(cmd)
+                if retcode:
+                    logger.error(f"Fail to sort {fn}")
+                    err = 1
+                    continue
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
             err = 1
-
-    # build the index for bed files
-    res = []
-    for fn in l_out:
-        lb_with_pw = fn.rsplit(".", 1)[0]
-        lb = get_lb(fn)
-        fn_idx = f'{lb_with_pw}.{bed_idx_step}.idx.pkl'
+            continue
         
-        if not os.path.exists(fn_idx):
-            logger.info(f'Building index for {fn}')
-            idx_bed = build_idx_for_bed(fn, step=bed_idx_step)
+        # build the index for bed files
+        if not os.path.exists(fn_bed_idx):
+            logger.info(f'Building index for {fn_lb}')
+            idx_bed = build_idx_for_bed(fn_bed_out, fn_bed_idx, step=bed_idx_step)
             if idx_bed is None:
-                logger.error(f'Fail to build index for {fn}')
+                logger.error(f'Fail to build index for {fn_lb}')
                 err = 1
         else:
-            with open(fn_idx, 'rb') as f:
+            with open(fn_bed_idx, 'rb') as f:
                 idx_bed = pickle.load(f)
 
-        res.append([fn, idx_bed, lb])
+        res.append([fn_bed_out, idx_bed, fn_lb])
     if err:
         return None
     return res
@@ -1756,3 +1721,85 @@ def filter_by_tss_tts(tss_tts_info, line):
     
     if flag == 0:
         filter_outstr += in_list[i] + "\n"
+
+
+def report_performance():
+    """
+    report the performance of the pipeline
+    """
+    pass
+
+    # compare the performance
+    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc', 'get_pro_summit', 'get_gene_seq',  'write_to_peak_file', 'fisher_exact', 'calculate_FDR', 'pre_fh_seek', 'fh_seek']
+    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc']
+    
+    # time_reference = {
+    #     "n_genes": 200,
+    #     "iterate_bed": 9.035804510116577,
+    #     "pre_fh_seek": 0.1330716609954834,
+    #     "fh_seek": 0.23243331909179688,
+    #     "get_mapped_reads": 9.544336795806885,
+    #     "get_pro_peak": 9.712411642074585,
+    #     "get_gb_peak": 0.0006918907165527344,
+    #     "fisher_exact": 0.4723787307739258,
+    #     "count_ATCG": 0.0016739368438720703,
+    #     "get_pro_summit": 0.002034902572631836,
+    #     "get_gene_seq": 0.06450319290161133,
+    #     "misc": 0.06480813026428223,
+    #     "check_none": 0.03544330596923828,
+    #     "write_to_peak_file": 0.01156163215637207,
+    #     "get_window_seq": 0.0007305145263671875,
+    #     "post_loop": 0.00772404670715332,
+    #     "count_pp_gb": 0.0016360282897949219,
+    #     "calculate_FDR": 0.0025238990783691406,
+    #     "add_to_pause_pvalue": 0.0015454292297363281,
+    #     "close file handle": 0.0005750656127929688,
+    #     "general_gene_info": 0.00041484832763671875,
+    #     "before bed loop": 0.00028777122497558594
+    # }
+    
+    # # based on bed index file chunk = 1000bp, do not split the strand, the initial setting
+    # line_count_reference = {
+    #     "skip_by_strand": 3974884,
+    #     "skip_before_region": 7703057,
+    #     "skip_pass_region": 251257,
+    #     "n_parsed": 1018026
+    # }
+    
+    # time_cost['n_genes'] = bench_max_gene
+    # tmp = {k: time_cost[k] for k in time_reference}
+    # print(json.dumps(tmp, indent=4))
+    
+    # tmp = {k: time_cost[k] for k in line_count_reference}
+    # print(json.dumps(tmp, indent=4))
+    
+    # line_ref = [time_reference[k] for k in keys]
+    # line1 = [round(time_cost[k], 5) for k in keys]
+    # ref_n_genes = time_reference['n_genes']
+    # line_ratio = [f'{round((_ / bench_max_gene) / (__ / ref_n_genes)*100, 1)}%' for _, __ in zip(line1, line_ref)]
+    # print('\t'.join(map(str, line1)))
+    # print('\t'.join(line_ratio))
+    
+    # print('\n\n')
+    
+    # for k in ['skip_by_strand', 'skip_before_region', 'skip_pass_region', 'n_parsed', 'total_get_mapped_reads_calls', 'total_get_peak_calls']:
+    #     ratio = time_cost[k] / line_count_reference.get(k, time_cost[k])
+    #     print(f'line_count - {k + ":":<26} {time_cost[k]:,} ({ratio:.1%})')
+
+    # if time_cost['skip_unkown']:
+    #     print(f'skip_unkown: n = {len(time_cost["skip_unkown"])}')
+    #     print('\n'.join(map(str, time_cost['skip_unkown'][:5])))
+
+    # with open(f'/Users/files/tmp1/nrsa/demo_data/get_peak_detail.chunk{analysis.bed_idx_step}.pkl', 'wb') as o:
+    #     tmp = {k: sorted(v) if isinstance(v, set) else v for k, v in time_cost['get_peak_detail'].items()}
+    #     pickle.dump(tmp, o)
+
+    # status = time_cost['get_peak_detail']
+
+    # for k in ['window_count',  'no_bed_chr']:
+    #     print(f'{k}: n = {status[k]}')
+    
+    # for k in ['no_bed_chunk_found', 'kept_reads_set', 'no_mapped_reads_window', 'no_mapped_reads_whole_region', 'inverse_byte_pos']:
+    #     print('\n\n')
+    #     print(f'{k}: n = {len(status[k])}')
+    #     print('\n'.join(map(str, sorted(status[k])[:5])))

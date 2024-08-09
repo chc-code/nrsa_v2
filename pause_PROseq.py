@@ -628,7 +628,7 @@ def main(terminal=True, args_like=None):
     for fn, idx_bed, fn_lb in fls:
         header_extra += [f'{fn_lb}-pindex', f'{fn_lb}-pvalue', f'{fn_lb}-FDR']
     header = analysis.gene_cols + header_extra
-    fno = 'pindex.txt'
+    fno =  os.path.join(analysis.known_gene_dir, prefix + 'pindex.txt') 
     with open(fno, 'w') as o:
         print('\t'.join(header), file=o)
         for transcript_id, gene_info in gtf_info.items():
@@ -650,8 +650,22 @@ def main(terminal=True, args_like=None):
 
     # heatmap
     logger.info(f'plotting heatmap for pp_change')
-    genome = analysis.organism
-    draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, genome=genome, )
+    fn_glist = os.path.join(analysis.inter_dir, prefix + "genes_for_heatmap.txt")
+    fn_pp_change = os.path.join(analysis.known_gene_dir, prefix + "pp_change.txt")
+    with open(fn_pp_change) as f, open(fn_glist, 'w') as o:
+        f.readline()
+        # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
+        for i in f:
+            line = i.split('\t', 4)
+            transcript_id, logfc = line[0], line[3]
+            if logfc != 'NA':
+                print(transcript_id, file=o)
+    
+    # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
+    draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fn_glist, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, ref_fls=analysis.ref, region_size=5000, bin_size=200, outname='heatmap')
+    
+    
+    
     
     # modify here
     logger.info('debug exit')

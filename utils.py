@@ -691,22 +691,162 @@ def draw_heatmap_pindex(n_gene_cols, pw_out):
     plt.savefig(f'{pw_out}/known_gene/pindex_change.pdf', bbox_inches='tight')
     plt.close()
 
-def draw_heatmap_pp_change(n_gene_cols, pw_out, fls_ctrl, fls_case, genome, out_name='heatmap'):
+
+def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, ref_fls, region_size=5000, bin_size=200, outname='heatmap'):
     """
     draw heatmap for pp change
+    fn_glist = gene list for plot (the IDs as listed in the first column of pp_change.txt)
+    fls_ctrl, fls_case, foramt is like [fn_bed, idx_bed, fn_lb]
+    region_size, upstream and downstream distance relative to TSS for plotting PRO-seq signal (bp, default: 5000),should can be divided by bin size
+    bin_size (bp, default: 200),should can be divided by 2
     """
     from matplotlib import pyplot as plt
+    fls_case = fls_case or []
     
+    ppchange = {}
     fn_pp_change = f'{pw_out}/known_gene/pp_change.txt'
+    fn_tss = ref_fls['tss']
     fno = f'{pw_out}/intermediate/genes_for_heatmap.pdf'
+    fn_split_bin_bed = f'{pw_out}/intermediate/region_bed.tmp'
+    fn_data_bed = f'{pw_out}/intermediate/data_bed.tmp'
+    fn_tss_padding = f'{pw_out}/intermediate/infile_bed.tmp' # expand the fn_tss with upstream and downstream region by region_size
+
+    if bin_size % 2 or region_size % bin_size:
+        logger.error(f'bin_size should be even and region_size should be divisible by bin_size')
+        return 1
+
+    bin_number = region_size * 2 / bin_size + 1  # *2 because of the upstream and downstream
+
+    with open(fn_glist) as f:
+        gn_list = {i.strip() for i in f}
+    
+    # read pp_change results
     # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
-    with open(fn_pp_change) as f, open(fno, 'w') as o:
-        f.readline() # header
+    with open(fn_pp_change) as f:
+        header = f.readline().strip().split('\t')
+        idx_transcript = header.index('Transcript')
+        idx_logfc = header.index('log2FoldChange')
         for i in f:
             line = i.strip().split('\t')
-            if line[2].upper() != 'NA':
-                print(line[0], file=o)
-        
+            transcript_id = line[idx_transcript]
+            if transcript_id in gn_list:
+                logfc = 'NA' if line[idx_logfc] == 'NA' else float(line[idx_logfc])
+                ppchange[transcript_id] = logfc
+    
+    # tss file
+    # chr1	11874	11874	NR_046018.2	+
+    tss_res = []
+    tss_with_padding = []
+    transcript_id_list = []
+    strand_info = {}
+    with open(fn_tss) as f:
+        for i in f:
+            line = i.strip().split('\t')
+            chr_, pos, transcript_id, strand = [line[_] for _ in [0, 1, 3, 4]]
+            pos_int = int(pos)
+            chr_ = refine_chr(chr_)
+            if transcript_id in ppchange and ppchange[transcript_id] != 'NA':
+                logfc = ppchange[transcript_id]
+                row = [transcript_id, chr_, pos, strand, logfc]
+                transcript_id_list.append(transcript_id)
+                strand_info[transcript_id] = strand
+
+                left_boundary = pos_int - region_size - bin_size/2
+                right_boundary = pos_int + region_size + bin_size/2
+                row_tmp = [chr_, left_boundary, right_boundary, transcript_id, strand]
+
+                tss_res.append(row)
+                tss_with_padding.append(row_tmp)
+    if len(tss_res) == 0:
+        logger.error(f'no gene in tss file match with the gene list, please check the gene names')
+        return 1
+    
+    # write tss_with_beding bed and data_bed
+    with open(fn_tss_padding, 'w') as o:
+        for i in tss_with_padding:
+            o.write('\t'.join(map(str, i)) + '\n')
+    with open(fn_data_bed, 'w') as o:
+        for i in tss_res:
+            o.write('\t'.join(map(str, i)) + '\n')
+
+    # use bedtools to split the fn_tss_padding, srcwinnum, use the orignal region_label and bin number
+    # after running, the last column is like  origlb_1, origlb_2, ....  _1, and _2 are the bin number
+    cmd = f'bedtools makewindows -b {fn_tss_padding} -n {bin_number} -i srcwinnum > {fn_split_bin_bed}'
+    retcode = run_shell(cmd)
+    if retcode:  # fail to makewindow
+        logger.error(f'failed to run bedtools makewindows')
+        return 1
+    
+    # load the normalization factors (nf.txt)
+    fn_nf = f'{pw_out}/intermediate/nf.txt'
+    factors_dict = {}
+    with open(fn_nf) as f:
+        f.readline() # header
+        for i in f:
+            sample, factor = i.strip().split('\t')
+            factors_dict[sample] = float(factor)
+            
+    # main part, get the overlap of the input bed files with the split bin bed
+    # coverage_by_strand_flag = '-s'  # by_strand, if used, need to update the reference tss file
+    coverage_by_strand_flag = '' # current setting
+    for condition, fls in {'control': fls_ctrl, 'case': fls_case}.items():
+        fn_count_sum = f'{pw_out}/intermediate/{condition}.count'
+        count = {}
+        n_sam_condition = len(fls)
+        for fn_bed, idx_bed, fn_lb in fls:
+            norm_factor = factors_dict[fn_lb]
+            fn_coverage_tmp = f'{pw_out}/intermediate/{fn_lb}.coverage_count.tmp'
+            # do we need to calculate the coverage by strand??? 
+            cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts {coverage_by_strand_flag} > {fn_coverage_tmp}'
+            retcode = run_shell(cmd)
+            if retcode:
+                logger.error(f'failed to run bedtools coverage for {fn_lb}')
+                return 1
+            # process the coverage file
+            # chr1	323932	323952	NR_028322.1_8   10
+            with open(fn_coverage_tmp) as f:
+                for i in f:
+                    _, transcript_id_chunk, ict = i.strip().rsplit('\t', 2)
+                    transcript_id, bin_sn = transcript_id_chunk.rsplit('_', 1)
+                    bin_sn = int(bin_sn)
+                    ict = int(ict)
+                    ict_norm = ict * norm_factor
+                    count.setdefault(transcript_id, {})[bin_sn] = ict_norm
+
+
+        with open(fn_count_sum, 'w') as o:
+            half_bin_number = (bin_number - 1) // 2
+            # header = ['Transcript'] + [f'up_{i}' for i in range(half_bin_number, 0, -1)] + ['tss'] + [f'down_{i}' for i in range(1, half_bin_number + 1)]
+            header = [f'up_{i}' for i in range(half_bin_number, 0, -1)] + ['tss'] + [f'down_{i}' for i in range(1, half_bin_number + 1)]
+            print('\t'.join(header), file=o)
+            for transcript_id, v1 in count.items():
+                strand = strand_info[transcript_id]
+                bin_count_list = []
+                bin_number_order = range(1, bin_number + 1) if strand == '+' else range(bin_number, 0, -1)
+                
+                for bin_sn in bin_number_order:
+                    bin_count_list.append(str(v1[bin_sn]))
+                tmp = "\t".join(bin_count_list)
+                print(f'{transcript_id}\t{tmp}', file=o)
+    
+    # heatmap.R  --args file=\"$data_bed\" outdir=\"$inter_dir\" pname=\"$outname\" window=$bin_size region=$region_size
+    # fn_data_bed => data_bed.tmp
+    # each row is [transcript_id, chr_, pos, strand, logfc]
+    # read the count table
+    df_case = pd.read_csv(f'{pw_out}/intermediate/case.count', sep='\t')
+    df_ctrl = pd.read_csv(f'{pw_out}/intermediate/control.count', sep='\t')
+    case_log = np.log2(df_case + 1)
+    ctrl_log = np.log2(df_ctrl + 1)
+    df_delta = case_log - ctrl_log
+    abs_values = np.abs(df_delta.values.flatten())
+    cutoff = np.quantile(abs_values, 0.75) # verified, match with R code
+    cutoff1 = round(cutoff, 1)
+    df_delta = df_delta.clip(lower=-cutoff, upper=cutoff)
+    
+    # plot
+    
+    
+    os.system(f'rm {pw_out}/intermediate/*.tmp')
 
 
 def groseq_fisherexact_pausing_for_gene(x, tssCountIndex, tssLengthIndex, genebodyCountIndex, genebodyLengthIndex):

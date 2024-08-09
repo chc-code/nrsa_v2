@@ -1447,16 +1447,29 @@ def check_dependency():
     check if the dependency: HOMER and bedtools are installed
     """
     # check HOMER
+    err = 0
     if os.system('which makeTagDirectory') != 0:
         logger.error("HOMER is not installed, please install HOMER first")
-        return 1
+        err = 1
 
     # check bedtools
     if os.system('which bedtools') != 0:
         logger.error("bedtools is not installed, please install bedtools first")
-        return 1
+        err = 1
+    
+    # check python packages
+    required_packages = ['pydeseq2', 'pandas', 'numpy', 'statsmodels', 'scipy', 'matplotlib']
+    import importlib.util
+    missing_python_packages = []
+    for pkg in required_packages:
+        if importlib.util.find_spec(pkg) is None:
+            missing_python_packages.append(pkg)
+            err = 1
+    if missing_python_packages:
+        logger.error(f"Missing python packages: {missing_python_packages}, please install them first.")
+    
+    return err
 
-    return 0
 
 def run_shell(cmd):
     """

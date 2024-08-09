@@ -277,7 +277,7 @@ def main(terminal=True, args_like=None):
     else:
         # check if the attributes are present
         defined_attrs = vars(args_like)
-        required_attrs = {'in1', 'o', 'organism', 'gtf', 'fa', 'f1', 'f2', 'up', 'down', 'gb', 'min_gene_len', 'window', 'step', 'bench'}
+        required_attrs = {'in1', 'o', 'organism'}
         
         optional_attrs = {
             'in2': None,
@@ -294,6 +294,10 @@ def main(terminal=True, args_like=None):
             'bench': False,
         }
         missing = required_attrs - set(defined_attrs)
+        exist = required_attrs & set(defined_attrs)
+        for attr in exist:
+            if getattr(args_like, attr) is None:
+                missing.add(attr)
         if missing:
             logger.error(f"Missing required attributes: {sorted(missing)}")
             return
@@ -305,7 +309,13 @@ def main(terminal=True, args_like=None):
     benchmode = args.bench
     
     
-    from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, draw_box_plot, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR
+    from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR
+    
+    # check dependencies
+    dependency_status = check_dependency()
+    if dependency_status:
+        logger.error("Dependency check failed")
+        sys.exit(1)
     
     
     analysis = Analysis(args)

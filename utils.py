@@ -28,6 +28,16 @@ class HiddenPrints:
         sys.stderr.close()
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
+def red(s, p=False):
+    s_new = f'\u001b[31;1m{s}\u001b[0m'
+    if p:
+        print(s_new)
+    return s_new
+def green(s, p=False):
+    s_new = f'\u001b[32;1m{s}\u001b[0m'
+    if p:
+        print(s_new)
+    return s_new
 
 def getlogger(fn_log=None, logger_name=None, nocolor=False):
     import logging
@@ -1563,12 +1573,15 @@ def check_dependency():
     """
     # check HOMER
     err = 0
-    if os.system('which makeTagDirectory') != 0:
+
+    retcode = run_shell('which makeTagDirectory')
+    if retcode != 0:
         logger.error("HOMER is not installed, please install HOMER first")
         err = 1
 
     # check bedtools
-    if os.system('which bedtools') != 0:
+    retcode = run_shell('which bedtools')
+    if retcode != 0:
         logger.error("bedtools is not installed, please install bedtools first")
         err = 1
     
@@ -1609,7 +1622,7 @@ def process_input(pwout, fls, bed_idx_step=100):
     process input files, convert bam to bed if needed, and build the index for bed files
     return a list of [fn_bed, idx_bed, fn_lb]
     """
-    if fls is None:
+    if fls is None or not fls:
         return None
     err = 0
     res = []
@@ -1624,14 +1637,17 @@ def process_input(pwout, fls, bed_idx_step=100):
             os.system(f'ln -s {fn_source} {fn_bed_out}')
         
         if os.path.exists(fn_bed_out) and os.path.getsize(fn_bed_out) > 10:
+            logger.info(f'Bed file {fn_lb} already exists')
             pass # already converted
         elif os.path.exists(fn_bed_inplace) and os.path.getsize(fn_bed_inplace) > 10:
             link_bed(fn_bed_inplace)
         elif fn.endswith('.bam'):
             logger.info(f'Converting {fn} to bed format')
-            cmd = f"bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_bed_out}"
+            # remove the read_id to reduce the file size
+
+            cmd = f"""bedtools bamtobed -i {fn} |awk 'BEGIN{{OFS="\\t"}} {{$4="i"; print $0}}'|bedtools sort -i - > {fn_bed_out}"""
             retcode = run_shell(cmd)
-            if ret_code:
+            if retcode:
                 logger.error(f"Fail to convert {fn} to bed format")
                 err = 1
                 continue

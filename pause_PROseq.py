@@ -8,6 +8,8 @@ import sys, os, re
 import pickle
 import json
 from types import SimpleNamespace
+from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR
+
 
 time_cost = {}
 now = time.time()
@@ -152,7 +154,6 @@ class Analysis:
         self.status = 0
 
         self.organism = args.organism
-        self.genome = self.organism
         if self.organism not in {'hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'}:
             logger.error(f"Invalid organism provided: {self.organism}")
             self.status = 1
@@ -306,7 +307,7 @@ def main(args=None):
     benchmode = args.bench
     
     
-    from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR
+    
     
     # check dependencies
     dependency_status = check_dependency()
@@ -674,12 +675,12 @@ def get_new_args(args, update_dict):
     
 if __name__ == "__main__":
     args = getargs()
-    print(args)
-    args.o = os.path.realpath(args.o[0])
-    args.organism = args.organism[0]
+    args.o = os.path.realpath(args.o)
+    args.organism = args.organism
+    
     if args.in1 is not None:
-        logger.info('Processing input files')
-        # main()
+        # logger.info('Processing input files')
+        main()
     elif args.design_table is not None:
         group_info = {}  # key = group name, v = file list
         comparison = []
@@ -723,8 +724,9 @@ if __name__ == "__main__":
                     update_dict['o'] = out_dir
                     
                     args_new = get_new_args(args, update_dict)
+                    # logger.info(vars(args_new))
                     logger.info(f'Processing {comp_str}')
-                    # main(args_new)
+                    main(args_new)
     else:
         logger.error("No input files provided, either use -in1 / in2 or provide a design table")
         sys.exit(1)

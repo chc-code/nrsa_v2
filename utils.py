@@ -12,7 +12,8 @@ import gzip
 from subprocess import Popen, PIPE
 import pandas as pd
 import numpy as np
-
+import fisher
+import bisect
 pw_code = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -39,7 +40,7 @@ def green(s, p=False):
         print(s_new)
     return s_new
 
-def getlogger(fn_log=None, logger_name=None, nocolor=False):
+def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
     import logging
     logger_name = logger_name or "main"
     
@@ -103,7 +104,7 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
     if 'console' not in handler_names:
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(CustomFormatter(nocolor=nocolor))
-        console.setLevel('INFO')
+        console.setLevel('DEBUG' if verbose else 'INFO')
         console.name = 'console'
         logger.addHandler(console)
 
@@ -298,194 +299,175 @@ def bench(s, lb, d):
     d[lb] += now - s
     return now
 
-def get_peak(idx_bed, fh_bed, chr_, strand, start, end, s_gene, gene_seq, window_size, step_size, only_mapped=False, time_cost=None, already_parsed_windows=None):
+def get_peak(count_file_info, chr_, strand, start, end, s_gene, gene_seq, window_size, step_size, only_mapped=False, time_cost=None, already_parsed_windows=None, get_summit_flag=False):
     """
-    get the window with the maximum number of mapped reads, 
-    s must be smaller than e
-    for a specific region defined by s and e, create a window with size = window_size, then count the number of mapped_reads(the end of the reads) in each window.
-    The next window will be moved by step_size, 
-    and the peak window is the window with the maximum number of mapped_reads.
-    
-    in the original perl code, the mappable sites are counted for each window, which makes no sense, because it is time consuming and only the value for the peak window is used.
-    so here, we only count the mappable sites for the peak window.
-    
-    s_gene is the start position of the gene, gene_seq is the sequence of the gene
-    only_mapped, for the get mappable_site count, if True, only count the mapped site (sites coverted by any read), otherwise, count all the sites that match with ATCG. In the main function of perl code, it is set to 0
-    so, actually, the most memory intensive data structure: mapped_region is never used in the original code.
+    use the new method, i.e. in the preprocessing step, get the mapped reads count for each 10bp window, then directly sum the mapped reads count for the new window
     """
-    time_cost['total_get_peak_calls'] += 1
-    
-    # status = time_cost['get_peak_detail']
-    # for k in ['window_count', 'no_bed_chr']:
-        # status.setdefault(k, 0)
-    # status.setdefault('no_bed_chunk_found', set())
-    # status.setdefault('inverse_byte_pos', set())
-    # status.setdefault('kept_reads_set', set())
-    # status.setdefault('no_mapped_reads_window', set())
-    # status.setdefault('no_mapped_reads_whole_region', [])
-    # status.setdefault('already_parsed_windows', 0)
-    
-    fn_lb = idx_bed['fn_lb']
-
-    
+    # fn_lb, fn_bed_count, idx_d, res_chunk
+    # count_file_info = {'fn': fn_bed_count, 'idx_d': idx_d, 'res_chunk': res_chunk, 'fh':  file handle}
     peak_window = [None, None] # [mapped_reads_count, window_start_pos]
+    count_file_idx = count_file_info['idx_d']
+    count_file_chunk = count_file_info['res_chunk']
+    count_file_fh = count_file_info['fh']
     
+    count_chunk_size = count_file_chunk['bin_size'] # default = 10bp
+    idx_chunk_size = count_file_idx['bin_size'] # default = 50bp
     
-    def get_chunk_mapped_read_ct(s_window, e_window):
-        window_lb = f'{chr_}@{strand}@{s_window}@{e_window}'
-        if window_lb in already_parsed_windows:
-            ct_mapped_read = already_parsed_windows[window_lb]
-        else:
-            ct_mapped_read = get_mapped_reads(idx_bed, fh_bed, chr_, strand, s_window, e_window, time_cost)
-            already_parsed_windows[window_lb] = ct_mapped_read
-        return ct_mapped_read
-    
+    k_whole = f'{chr_}@{strand}@{start}@{end}'
+    if already_parsed_windows and k_whole in already_parsed_windows['peak']:
+        return already_parsed_windows['peak'][k_whole]
     
     for pos in range(start, end - window_size + 2, step_size):
-        s = time.time()
         s_window, e_window = pos, pos + window_size - 1
-        s = bench(s, 'misc', time_cost)
-        # mapped_reads_in_window = get_mapped_reads(idx_bed, fh_bed, chr_, strand, s_window, e_window, time_cost)
-        
-        # modify here
-        # we can use smaller chunk, e.g. 10bp to store the already done results to avoid the repeated calculation for the transcripts with phase shift but most of the part overlap
-        # not implemented yet
-        
-        window_lb = f'{chr_}@{strand}@{s_window}@{e_window}'
-        if window_lb in already_parsed_windows:
-            ct_mapped_read = already_parsed_windows[window_lb]
-            # status['already_parsed_windows'] += 1
-            if ct_mapped_read:
-                time_cost['n_parsed'] += ct_mapped_read
+        k = f'{chr_}@{strand}@{s_window}@{e_window}'
+        if already_parsed_windows and k in already_parsed_windows:
+            ct_mapped_read = already_parsed_windows[k]
         else:
-            ct_mapped_read = get_mapped_reads(idx_bed, fh_bed, chr_, strand, s_window, e_window, time_cost)
-            already_parsed_windows[window_lb] = ct_mapped_read
-        s = bench(s, 'get_mapped_reads', time_cost)
-        time_cost['total_get_mapped_reads_calls'] += 1
-
-        # status['window_count'] += 1
-        
-        if ct_mapped_read is None:
-            # no mapped reads in the window
-            # status['no_mapped_reads_window'].add(f'{fn_lb}@{chr_}@{strand}@{s_window}@{e_window}')
-            continue
-        # s = bench(s, 'check_none', time_cost)
-        # in previous perl code, will iter over each site in the window and get the count from the pre-built mapped_reads dict, then sum it up.
-        # here we can directly sum all the mapped reads in the window
+            # each window, split into 3 parts
+            # part1 = s_window to the first bin boundary
+            # part2 = the bins in the window
+            # part3 = the last bin boundary to e_window
+            bin_start = s_window // count_chunk_size
+            bin_end = e_window // count_chunk_size
+            
+            window_both_side = []
+            p2_bin_list = []
+            ct_mapped_read = 0
+            
+            p1_s, p1_e = (s_window, (bin_start + 1) * count_chunk_size - 1)
+            if bin_end == bin_start:
+                window_both_side.append([p1_s, window_e])
+                # there is no p2 and p3
+            else:
+                p3_s, p3_e = ((bin_end) * count_chunk_size, e_window)
+                window_both_side.append([p1_s, p1_e])
+                window_both_side.append([p3_s, p3_e])
+                if bin_end > bin_start + 1:
+                    p2_bin_list = range(bin_start + 1, bin_end)
+                    
+            for ps, pe in window_both_side:
+                k1 = f'{chr_}@{strand}@{ps}@{pe}'
+                if already_parsed_windows and k1 in already_parsed_windows:
+                    ct_mapped_read += already_parsed_windows[k1]
+                else:
+                    ct_mapped_read += get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, ps, pe)
+            if p2_bin_list:
+                for p2_bin in p2_bin_list:
+                    ct_mapped_read += count_file_chunk[chr_][strand].get(p2_bin, 0)
+            already_parsed_windows[k] = ct_mapped_read
         if peak_window[0] is None or ct_mapped_read > peak_window[0]:
-            peak_window = [ct_mapped_read, pos]
-        s = bench(s, 'misc', time_cost)
-    
+                peak_window = [ct_mapped_read, pos]
+
     # status['total_parsed_reads'] = time_cost['n_parsed']
-    if peak_window[0] is None:
-        # status['no_mapped_reads_whole_region'].append(f'{fn_lb}@{chr_}@{strand}@{start}@{end}')
-        return [0, 0, 0, start if strand == '+' else end]
+    if not peak_window[0]:
+        ires = [0, 0, 0, start if strand == '+' else end]
+        already_parsed_windows['peak'][k_whole] = ires
+        return ires
     s_peak_window = peak_window[1]
     e_peak_window = s_peak_window + window_size - 1
-    # s = bench(s, 'post_loop', time_cost)
+    if get_summit_flag and peak_window[0] > 0:
+        summit_pos = get_summit(count_file_fh, count_file_idx, chr_, strand, s_peak_window, e_peak_window)
+    else:
+        summit_pos = s_peak_window
     
     seq_window = gene_seq[s_peak_window - s_gene: e_peak_window - s_gene + 1].upper()
     # s = bench(s, 'get_window_seq', time_cost)
     mappable_sites = seq_window.count('A') + seq_window.count('T') + seq_window.count('G') + seq_window.count('C')
-    # s = bench(s, 'count_ATCG', time_cost)
     ratio = peak_window[0] / mappable_sites if mappable_sites else 0
-    # s = bench(s, 'misc', time_cost)   
-    return [peak_window[0], mappable_sites, ratio, s_peak_window]
+    ires = [peak_window[0], mappable_sites, ratio, summit_pos]
+    already_parsed_windows['peak'][k_whole] = ires
+    return ires
 
 
-def get_summit(idx_bed, fh_bed, strand, chr_, start_pos, window_size=50):
-    """Finds the summit (position with maximum coverage) within a window around start_pos.
-    this function esp. the get coverage part has been verfified in IGV, 
-    Returns:
-        The position of the summit within the window.
-    """
-    summit = 0
-    summit_pos = start_pos
-    # example, for YZ-1.bed, chr10:3,828,233-3,828,357
-    region_s, region_e = start_pos, start_pos + window_size - 1
-    mapped_reads = get_mapped_reads_orig(idx_bed, fh_bed, chr_, strand, region_s, region_e)
-    if mapped_reads is None:
-        return summit_pos
-    # to get the summit, also need to consider the strand
-    reverse_flag = True if strand == '-' else False
-    sites = sorted(mapped_reads.keys(), reverse=reverse_flag)
-    for i in sites:
-        if mapped_reads[i] > summit:
-            summit = mapped_reads[i]
-            summit_pos = i
-    return summit_pos
-
-def get_mapped_reads_orig(idx_bed, fh_bed, chr_, strand, start, end):
+def get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, start, end):
     """
     get the coverage of the region, the coverage is the number of **read ends** at each position in this region
     each call will cost around 100us.
     """
-    chr_ = refine_chr(chr_)
-    if chr_ not in idx_bed:
-        return None
-    region_s = min(start, end)
-    region_e = max(start, end)
-    chunk_s = region_s // idx_bed['step']
-    chunk_e = region_s // idx_bed['step']
-    if chunk_s not in idx_bed[chr_]:
-        if chunk_e not in idx_bed[chr_]:
-            # the region is not in the bed file
-            return None
-        fh_byte_start = idx_bed[chr_][chunk_e]
-    else:
-        fh_byte_start = idx_bed[chr_][chunk_s]
-    fh_bed.seek(fh_byte_start)
+    chunk_size = count_file_idx['bin_size']
+    start, end = sorted([start, end])
+    chunk_s = start // chunk_size
+    chunk_e = end // chunk_size
+    strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
+    idx_bed_chr = count_file_idx[chr_]
+    fh_byte_start = None
     
-    mapped_reads = {} 
-    for i in fh_bed:
+    if chunk_e > chunk_s:
+        all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
+        for ichunk in all_possible_chunks:
+            if ichunk in idx_bed_chr:
+                byte_pos_tmp = idx_bed_chr[ichunk]
+                if fh_byte_start is None or byte_pos_tmp < fh_byte_start:
+                    fh_byte_start = byte_pos_tmp
+    else:
+        if chunk_s in idx_bed_chr:
+            fh_byte_start = idx_bed_chr[chunk_s]
+    if fh_byte_start is None:
+        # no reads in this region
+        return 0
+
+    count_file_fh.seek(fh_byte_start)
+    n_parsed = 0
+    for i in count_file_fh:
+        # 1	13033	0	2
         line = i[:-1].split('\t')
-        s, e, i_strand = [line[_] for _ in [1, 2, 5]]
-        s, e = int(s) + 1, int(e)
-        if  s > region_e:
+        chr_line, pos, ict = line[0], line[1], line[strand_idx]
+        pos = int(pos)
+        ict = int(ict)
+        if start <= pos <= end:
+            n_parsed += ict
+            continue
+        if  pos > end or chr_line != chr_:
             # there will be no more lines matching the region
             break
-        if i_strand != strand or e < region_s:
-            # strand not match or the region is not in the line
-            continue
-        read_end = e if strand == '+' else s
-        if region_s <= read_end <= region_e:
-            mapped_reads.setdefault(read_end, 0)
-            mapped_reads[read_end] += 1
-        # there are overlap between the region and the line
-        # overlap_s, overlap_e = max(s, region_s), min(e, region_e)
-        # for i in range(overlap_s, overlap_e + 1):
-        #     depth.setdefault(i, 0)
-        #     depth[i] += 1
-    return mapped_reads
+    return n_parsed
 
+def get_summit(count_file_fh, count_file_idx, chr_, strand, start, end):
+    """
+    get the positionn with the hightest count in the region
+    """
+    chunk_size = count_file_idx['bin_size']
+    start, end = sorted([start, end])
+    chunk_s = start // chunk_size
+    chunk_e = end // chunk_size
+    strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
+    idx_bed_chr = count_file_idx[chr_]
 
-def get_chunk_number(idx_bed, chr_, pos):
-    """
-    get the chunk number for the position, if not found, will return the nearest chunk number
-    """
-    chr_ = refine_chr(chr_)
-    if chr_ not in idx_bed:
-        return None
+    all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
+    fh_byte_start = None
+
+    if chunk_e > chunk_s:
+        all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
+        for ichunk in all_possible_chunks:
+            if ichunk in idx_bed_chr:
+                byte_pos_tmp = idx_bed_chr[ichunk]
+                if fh_byte_start is None or byte_pos_tmp < fh_byte_start:
+                    fh_byte_start = byte_pos_tmp
+    else:
+        if chunk_s in idx_bed_chr:
+            fh_byte_start = idx_bed_chr[chunk_s]
+    if fh_byte_start is None:
+        # no reads in this region
+        return 0
+
+    count_file_fh.seek(fh_byte_start)
     
-    res = {'+': None, '-': None}
-    for strand in ['+', '-']:
-        idx_bed_chr = idx_bed[chr_][strand]
-        chunk = pos // idx_bed['step']
-        if chunk in idx_bed_chr:
-            res[strand] = [chunk, idx_bed_chr[chunk], 'exact']
-        else:
-            found = 0
-            for offset in range(1, 101):
-                if found:
-                    break
-                for direction in [-1, 1]:
-                    direction_str = 'up' if direction == -1 else 'down'
-                    chunk_offset = chunk + offset * direction
-                    if chunk_offset in idx_bed_chr:
-                        res[strand] = [chunk_offset, idx_bed_chr[chunk_offset], f'offset = {direction_str} {offset}']
-                        found = 1
-                        break
-    return res
+    summit = [0, 0]
+    for i in count_file_fh:
+        # 1	13033	0	2
+        line = i[:-1].split('\t')
+        chr_line, pos, ict = line[0], line[1], line[strand_idx]
+        pos = int(pos)
+        ict = int(ict)
+        if start <= pos <= end:
+            if summit[0] < ict:
+                summit = [ict, pos]
+            continue
+
+        if  pos > end or chr_line != chr_:
+            # there will be no more lines matching the region
+            break
+    return summit[1]
 
 
 def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=None):
@@ -834,36 +816,27 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, re
     os.system(f'rm {pw_out}/intermediate/*.tmp')
 
 
-def groseq_fisherexact_pausing_for_gene(x, tssCountIndex, tssLengthIndex, genebodyCountIndex, genebodyLengthIndex):
+def groseq_fisherexact_pausing_for_gene(c1, l1, c2, l2):
     """
     Perform Fisher's exact test to calculate the p-value for the pausing index of each gene. x is a row of the pausing count dataset
+    per run, is about 1ms, so it is quite slow., 1-2ms per run
+    user new fisher package, the speed is 100x faster (6us per call)
+    must make sure the input are all non-zero
     """
-    from scipy.stats import fisher_exact
-    c1 = round(float(x[tssCountIndex]))
-    c2 = round(float(x[genebodyCountIndex]))
-    l1 = round(float(x[tssLengthIndex]))
-    l2 = round(float(x[genebodyLengthIndex]))
-    
-    if c1 == 0 or c2 == 0 or l1 == 0 or l2 == 0:
-        return None
-    else:
+    # if c1 == 0 or c2 == 0 or l1 == 0 or l2 == 0:
+    #     return 'NA'
+    # else:
         # null hypothesis: the pause read count is uniformly distributed in the gene body and the promoter region
-        expectC1 = round(l1 * (c1 + c2) / (l1 + l2))
-        expectC2 = (c1 + c2 - expectC1)
-    
-    # default = two-sided
-    _, p_value = fisher_exact([[c1, expectC1], [c2, expectC2]])
-    
-    # for multiple genes, use BH correction to adjust the p-value(FDR)
-    
-    return p_value
 
+    expectC1 = round(l1 * (c1 + c2) / (l1 + l2))
+    expectC2 = (c1 + c2 - expectC1)
+    # default = two-sided
+    return fisher.pvalue(c1, expectC1, c2, expectC2).two_tail
 
 def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCountGene2, gbCountGene2):
     """
     Perform Fisher's exact test to calculate the p-value for the comparison of pausing index between two genes or 2 conditions of the same gene
     """
-    from scipy.stats import fisher_exact
     c1 = round(float(tssCountGene1))
     c2 = round(float(gbCountGene1))
     c3 = round(float(tssCountGene2))
@@ -873,10 +846,7 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
         return None
     
     # default = two-sided
-    _, p_value = fisher_exact([[c1, c2], [c3, c4]])
-    # for multiple genes, use BH correction to adjust the p-value(FDR)
-    return p_value
-
+    return fisher.pvalue(c1, c2, c3, c4).two_tail
 
 def calc_FDR(pvalues, with_na=True):
     """
@@ -1273,9 +1243,9 @@ def cmhtest(row, rep1, rep2):
         gb1 = row[n_sam + (i + 1) * 2 - 2] # gb condition 1
         for j in range(rep2):
             pp2 = row[rep1 + j]
-            # gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
+            gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
             # below is the gb2 defined in R code, which is wrong, here just used to test the consistency
-            gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
+            # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
             arr.append([[pp2, gb2], [pp1, gb1]])
     arr = np.array(arr).T
     cmt = sm.stats.contingency_tables.StratifiedTable(tables=arr)
@@ -1378,83 +1348,6 @@ def change_enhancer(fn, out_dir, condition, rep1, rep2, factor1=None, factor2=No
         pass
     
 
-def get_mapped_reads(idx_bed, fh_bed, chr_, strand, start, end, time_cost):
-    """
-    get the coverage of the region, the coverage is the number of **read ends** at each position in this region
-    each call will cost around 100us.
-    """
-    stime = time.time()
-    # status = time_cost['get_peak_detail']
-    # kept_reads_set = status['kept_reads_set']
-
-    chr_ = refine_chr(chr_)
-    if chr_ not in idx_bed:
-        # status['no_bed_chr'] += 1
-        return None
-    region_s = min(start, end)
-    region_e = max(start, end)
-    chunk_s = region_s // idx_bed['step']
-    chunk_e = region_e // idx_bed['step']
-    
-    idx_bed_chr = idx_bed[chr_][strand]
-    
-    all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
-    fh_byte_start = None
-    first_found = None
-    for ichunk in all_possible_chunks:
-        if ichunk in idx_bed_chr:
-            byte_pos_tmp = idx_bed_chr[ichunk]
-            if first_found is None:
-                first_found = byte_pos_tmp
-            if fh_byte_start is None or byte_pos_tmp < fh_byte_start:
-                fh_byte_start = byte_pos_tmp
-    if fh_byte_start is None:
-        # status['no_bed_chunk_found'].add(f'{chr_}@{strand}@{region_s}@{region_e}')
-        return None
-
-    # if first_found != fh_byte_start:
-        # status['inverse_byte_pos'].add(f'{chr_}@{strand}@{region_s}@{region_e}')
-
-    stime = bench(stime, 'pre_fh_seek', time_cost)
-    fh_bed.seek(fh_byte_start)
-    stime = bench(stime, 'fh_seek', time_cost)
-    
-    n_parsed = 0
-    skip_by_strand = 0
-    skip_before_region = 0
-    skip_pass_region = 0 # for plus strand, the read end already passed the region, but the start still before the regeion_end
-    skip_unkown = [] # other skip due to unkown reason
-
-    for i in fh_bed:
-        line = i[:-1].split('\t')
-        s, e, i_strand = line[1], line[2], line[5]
-        s = int(s) + 1
-        if  s > region_e:
-            # there will be no more lines matching the region
-            break
-        read_end = int(e) if strand == '+' else s
-        if strand == i_strand and region_s <= read_end <= region_e:
-            n_parsed += 1
-            # kept_reads_set.add(f'{read_id}@{read_end}###{chr_}@{strand}@{region_s}@{region_e}')
-
-        # # modify here, remove below for performance
-        # elif strand != i_strand:
-        #     skip_by_strand += 1
-        # elif read_end < region_s:
-        #     skip_before_region += 1
-        # elif read_end > region_e:
-        #     skip_pass_region += 1
-        # else:
-        #     skip_unkown.append(['bed_line', s, e, i_strand, 'region', region_s, region_e, strand])
-
-    # for var, k in zip([skip_by_strand, skip_before_region, skip_pass_region, n_parsed], ['skip_by_strand', 'skip_before_region', 'skip_pass_region', 'n_parsed']):
-    #     time_cost[k] += var
-    # if skip_unkown:
-    #     time_cost['skip_unkown'] += skip_unkown
-
-    # stime = bench(stime, 'iterate_bed', time_cost)
-    return n_parsed
-
 
 def process_gtf(fn_gtf):
     """
@@ -1466,6 +1359,7 @@ def process_gtf(fn_gtf):
 
     fn_gtf_pkl = f'{fn_gtf.rsplit(".", 1)[0]}.pkl'
     if os.path.exists(fn_gtf_pkl):
+        logger.debug('loading gtf from pickle')
         with open(fn_gtf_pkl, 'rb') as f:
             return pickle.load(f), err
     
@@ -1569,7 +1463,7 @@ def check_dependency():
         err = 1
     
     # check python packages
-    required_packages = ['pydeseq2', 'pandas', 'numpy', 'statsmodels', 'scipy', 'matplotlib']
+    required_packages = ['pydeseq2', 'pandas', 'numpy', 'statsmodels', 'scipy', 'matplotlib', 'fisher']
     import importlib.util
     missing_python_packages = []
     for pkg in required_packages:
@@ -1600,6 +1494,93 @@ def get_lb(fn):
 
 
 
+def pre_count_for_bed(fh_bed, fn_lb, pwout):
+    """
+    fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
+    process the bed file, and get the count of the read end regarding strand.
+    will export 2 files, 
+    1. dict, key = chr, k2 = strand, k3 = chunk_number. value = count of reads with read end in this chunk.  the chunk_number is got from position // chunk_size  (default chunksize = 10bp)
+    2. bed file, record the read end chr, read_end position, strand and the count of reads with this read end position
+    """
+    chunk_size = 10
+    idx_bin_size = 50 # for the per position read end count file (final output), will build the index
+
+    fn_out = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.txt'
+    fn_out_idx = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.idx.pkl'
+    fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{chunk_size}.pkl'
+    
+    
+    if os.path.exists(fn_out) and os.path.getsize(fn_out) > 10 and os.path.exists(fn_out_idx) and os.path.exists(fn_count_bin):
+        logger.info(f'bed file already pre-counted: {fn_lb}')
+        with open(fn_out_idx, 'rb') as f:
+            idx_d = pickle.load(f)
+        with open(fn_count_bin, 'rb') as f:
+            res_chunk = pickle.load(f)
+        return fn_lb, fn_out, idx_d, res_chunk
+
+    if fh_bed is None:
+        return None
+    res_chunk = {'bin_size': chunk_size}
+    res_bed = {}
+    idx_d = {'bin_size': idx_bin_size}  # key = chr, k2 = bin_number, value = byte position in the file
+    file_out_pos = 0 # current byte position in the output count file
+
+    
+    def dump_pos_to_file(chr_, res_bed_chr, fo, file_out_pos):
+        dump_pos_l = sorted(res_bed_chr)
+        for dp in dump_pos_l:
+            ct = res_bed_chr.pop(dp)
+            chunk = dp // idx_bin_size
+            idx_tmp = idx_d.setdefault(chr_, {})
+            line_out = f'{chr_}\t{dp}\t{ct[0]}\t{ct[1]}\n'
+            if chunk not in idx_tmp:
+                idx_tmp[chunk] = file_out_pos
+            fo.write(line_out)
+            file_out_pos += len(line_out)
+        return file_out_pos
+
+    n = 0
+    section_size, unit = 1_000_000, 'M'
+    with open(fn_out, 'w') as fo:
+        for i in fh_bed:
+            # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
+
+            n += 1
+            if n % section_size == 0:
+                logger.debug(f'Processing {n/section_size:.0f}{unit} lines')
+            chr_, s, e, read_id, _, strand = i[:-1].split('\t')
+            if strand == '+':
+                read_end = int(e)
+            else:
+                read_end = int(s) + 1
+
+            chunk = read_end // chunk_size
+            res_chunk.setdefault(chr_, {}).setdefault(strand, {}).setdefault(chunk, 0)
+            res_chunk[chr_][strand][chunk] += 1
+            
+            res_bed.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
+            idx_strand = 0 if strand == '+' else 1
+            res_bed[chr_][read_end][idx_strand] += 1
+
+
+        for chr_ in sorted(res_bed):
+            # dump the res_bed_chr to file
+            logger.debug(f'{fn_lb} - dumping the pos list for chr {chr_}')
+            res_bed_chr = res_bed[chr_]
+            chr_ = refine_chr(chr_)
+            if chr_[:2].lower() == 'gl':
+                continue
+            file_out_pos = dump_pos_to_file(chr_, res_bed_chr, fo, file_out_pos)
+        
+    # dump the pickle
+    with open(fn_out_idx, 'wb') as f:
+        pickle.dump(idx_d, f)
+    
+    with open(fn_count_bin, 'wb') as f:
+        pickle.dump(res_chunk, f)
+    return fn_lb, fn_out, idx_d, res_chunk
+
+
 def process_input(pwout, fls, bed_idx_step=100):
     """
     process input files, convert bam to bed if needed, and build the index for bed files
@@ -1611,60 +1592,26 @@ def process_input(pwout, fls, bed_idx_step=100):
     res = []
     lb_map = {}
     for fn in fls:
-        fn_lb = os.path.basename(fn).rsplit('.', 1)[0]
-        fn_bed_out = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
-        fn_bed_inplace = re.sub(r'\.(bed|bam)$', '.sorted.bed', fn)
-        fn_bed_idx = f'{pwout}/intermediate/bed/{fn_lb}.{bed_idx_step}.idx.pkl'
-        
-        def link_bed(fn_source):
-            os.system(f'ln -s {fn_source} {fn_bed_out}')
-        
-        if os.path.exists(fn_bed_out) and os.path.getsize(fn_bed_out) > 10:
-            logger.info(f'Bed file {fn_lb} already exists')
-            pass # already converted
-        elif os.path.exists(fn_bed_inplace) and os.path.getsize(fn_bed_inplace) > 10:
-            link_bed(fn_bed_inplace)
-        elif fn.endswith('.bam'):
-            logger.info(f'Converting {fn} to bed format')
-            # remove the read_id to reduce the file size
+        fn_lb = get_lb(fn)
+        fn_out = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.txt'
 
-            cmd = f"""bedtools bamtobed -i {fn} |awk 'BEGIN{{OFS="\\t"}} {{$4="i"; print $0}}'|bedtools sort -i - > {fn_bed_out}"""
-            retcode = run_shell(cmd)
-            if retcode:
-                logger.error(f"Fail to convert {fn} to bed format")
-                err = 1
-                continue
+        if os.path.exists(fn_out) and os.path.getsize(fn_out) > 10:
+            tmp = pre_count_for_bed(None, fn_lb, pwout)
+            if tmp is not None:
+                res.append(tmp)
+        if fn.endswith('.bam'):
+            logger.info(f'Converting {fn} to bed format')
+            cmd = f"""bedtools bamtobed -i {fn}"""
+            with Popen(cmd, shell=True, stdout=PIPE, text=True) as p:
+                with p.stdout as fh_bed:
+                    res.append(pre_count_for_bed(fh_bed, fn_lb, pwout))
         elif fn.endswith('.bed'):
-            logger.info(f'Checking if bed file is sorted: {fn}')
-            is_sorted = check_is_sorted(fn)
-            if is_sorted:
-                logger.info(f'File is already sorted')
-                link_bed(fn)
-            else:
-                logger.info(f'File is not sorted, now sorting it...')
-                cmd = f"bedtools sort -i {fn} > {fn_bed_out}"
-                retcode = run_shell(cmd)
-                if retcode:
-                    logger.error(f"Fail to sort {fn}")
-                    err = 1
-                    continue
+            with open(fn) as fh_bed:
+                res.append(pre_count_for_bed(fh_bed, fn_lb, pwout))
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
             err = 1
             continue
-        
-        # build the index for bed files
-        if not os.path.exists(fn_bed_idx):
-            logger.info(f'Building index for {fn_lb}')
-            idx_bed = build_idx_for_bed(fn_bed_out, fn_bed_idx, step=bed_idx_step)
-            if idx_bed is None:
-                logger.error(f'Fail to build index for {fn_lb}')
-                err = 1
-        else:
-            with open(fn_bed_idx, 'rb') as f:
-                idx_bed = pickle.load(f)
-
-        res.append([fn_bed_out, idx_bed, fn_lb])
     if err:
         return None
     return res
@@ -1721,84 +1668,3 @@ def filter_by_tss_tts(tss_tts_info, line):
     if flag == 0:
         filter_outstr += in_list[i] + "\n"
 
-
-def report_performance():
-    """
-    report the performance of the pipeline
-    """
-    pass
-
-    # compare the performance
-    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc', 'get_pro_summit', 'get_gene_seq',  'write_to_peak_file', 'fisher_exact', 'calculate_FDR', 'pre_fh_seek', 'fh_seek']
-    # keys = ['get_mapped_reads', 'iterate_bed', 'get_pro_peak', 'get_gb_peak', 'count_ATCG', 'get_window_seq', 'misc']
-    
-    # time_reference = {
-    #     "n_genes": 200,
-    #     "iterate_bed": 9.035804510116577,
-    #     "pre_fh_seek": 0.1330716609954834,
-    #     "fh_seek": 0.23243331909179688,
-    #     "get_mapped_reads": 9.544336795806885,
-    #     "get_pro_peak": 9.712411642074585,
-    #     "get_gb_peak": 0.0006918907165527344,
-    #     "fisher_exact": 0.4723787307739258,
-    #     "count_ATCG": 0.0016739368438720703,
-    #     "get_pro_summit": 0.002034902572631836,
-    #     "get_gene_seq": 0.06450319290161133,
-    #     "misc": 0.06480813026428223,
-    #     "check_none": 0.03544330596923828,
-    #     "write_to_peak_file": 0.01156163215637207,
-    #     "get_window_seq": 0.0007305145263671875,
-    #     "post_loop": 0.00772404670715332,
-    #     "count_pp_gb": 0.0016360282897949219,
-    #     "calculate_FDR": 0.0025238990783691406,
-    #     "add_to_pause_pvalue": 0.0015454292297363281,
-    #     "close file handle": 0.0005750656127929688,
-    #     "general_gene_info": 0.00041484832763671875,
-    #     "before bed loop": 0.00028777122497558594
-    # }
-    
-    # # based on bed index file chunk = 1000bp, do not split the strand, the initial setting
-    # line_count_reference = {
-    #     "skip_by_strand": 3974884,
-    #     "skip_before_region": 7703057,
-    #     "skip_pass_region": 251257,
-    #     "n_parsed": 1018026
-    # }
-    
-    # time_cost['n_genes'] = bench_max_gene
-    # tmp = {k: time_cost[k] for k in time_reference}
-    # print(json.dumps(tmp, indent=4))
-    
-    # tmp = {k: time_cost[k] for k in line_count_reference}
-    # print(json.dumps(tmp, indent=4))
-    
-    # line_ref = [time_reference[k] for k in keys]
-    # line1 = [round(time_cost[k], 5) for k in keys]
-    # ref_n_genes = time_reference['n_genes']
-    # line_ratio = [f'{round((_ / bench_max_gene) / (__ / ref_n_genes)*100, 1)}%' for _, __ in zip(line1, line_ref)]
-    # print('\t'.join(map(str, line1)))
-    # print('\t'.join(line_ratio))
-    
-    # print('\n\n')
-    
-    # for k in ['skip_by_strand', 'skip_before_region', 'skip_pass_region', 'n_parsed', 'total_get_mapped_reads_calls', 'total_get_peak_calls']:
-    #     ratio = time_cost[k] / line_count_reference.get(k, time_cost[k])
-    #     print(f'line_count - {k + ":":<26} {time_cost[k]:,} ({ratio:.1%})')
-
-    # if time_cost['skip_unkown']:
-    #     print(f'skip_unkown: n = {len(time_cost["skip_unkown"])}')
-    #     print('\n'.join(map(str, time_cost['skip_unkown'][:5])))
-
-    # with open(f'/Users/files/tmp1/nrsa/demo_data/get_peak_detail.chunk{analysis.bed_idx_step}.pkl', 'wb') as o:
-    #     tmp = {k: sorted(v) if isinstance(v, set) else v for k, v in time_cost['get_peak_detail'].items()}
-    #     pickle.dump(tmp, o)
-
-    # status = time_cost['get_peak_detail']
-
-    # for k in ['window_count',  'no_bed_chr']:
-    #     print(f'{k}: n = {status[k]}')
-    
-    # for k in ['no_bed_chunk_found', 'kept_reads_set', 'no_mapped_reads_window', 'no_mapped_reads_whole_region', 'inverse_byte_pos']:
-    #     print('\n\n')
-    #     print(f'{k}: n = {len(status[k])}')
-    #     print('\n'.join(map(str, sorted(status[k])[:5])))

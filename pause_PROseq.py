@@ -8,10 +8,10 @@ import sys, os, re
 import pickle
 import json
 from types import SimpleNamespace
-from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak, get_summit, groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR, get_alternative_isoform_across_conditions
+from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR, get_alternative_isoform_across_conditions, get_FDR_per_sample
 
 
-time_cost = {}
+time_cost = {'reused': {'whole_region': 0, 'window': 0, 'side': 0}}
 now = time.time()
 
 s = now
@@ -238,7 +238,7 @@ class Analysis:
             # tssCount, tssLength, tssRatio, tssSummit_pos, genebodyCount, genebodyLength, genebodyRatio, tss_vs_genebody_ratio
             self.out_fls['count_file'][fn_lb] = {'fn': fn_bed_count, 'idx_d': idx_d, 'res_chunk': res_chunk}
             fh_count_file = open(fn_bed_count, 'r')
-            self.out_dir['count_file'][fn_lb]['fh'] = fh_count_file
+            self.out_fls['count_file'][fn_lb]['fh'] = fh_count_file
             
             header_bed_peaks = self.gene_cols + ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
             fn_bed_peaks = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_raw.txt')
@@ -255,9 +255,7 @@ class Analysis:
             
             header_fdr = header_bed_peaks + ['pvalue', 'FDR']
             fn_fdr = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_FDR.txt')
-            fh_fdr = open(fn_fdr, 'w')
-            fh_fdr.write('\t'.join(header_fdr) + '\n')
-            self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'fh': fh_fdr, 'header': header_fdr}
+            self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'header': header_fdr}
         
         # config
         self.config = {
@@ -280,9 +278,8 @@ def bench(s, lb):
     return now
 
 
-def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, ):
-
-    already_parsed_windows = {fn_lb: {} for fn_lb, fn, _2, _3 in fls} # fn_lb, fn_bed_count, idx_d, res_chunk
+def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols):
+    already_parsed_windows = {fn_lb: {'peak': {}} for fn_lb, fn, _2, _3 in fls} # fn_lb, fn_bed_count, idx_d, res_chunk
     n_transcript = 0
     invalid_chr_transcript = 0
     pp_str = {} # key = gene_id, v = the peak count in promoter region for each file. 
@@ -290,58 +287,57 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, ):
     
     # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
     fn_peak_float_cols = {n_gene_cols + 2, n_gene_cols + 6} # used for output, to round the float values to 5 decimal places
-    pause_pvalue = {}  # key = fn_bed, used for retrieving the pause raw count file, used as base to add 2 columns for p_value and FDR. v = list of pvalue in each row, used to calculate FDR
-    gbc_sum = {} # key = fn_bed, v = sum of gene body count for each gene
-    fn_peak_rows = {} # k1 = fn_bed, k2 = row_idx, v = row_str
     fail_to_retrieve_seq = 0
 
+    n = 0
+    prev = [time.time(), 0] # time, get_mapped_reads_count count
+    section_size = 1000 # print log every 1000 loops
+    valid_bases = {'A', 'T', 'C', 'G'}
 
     for transcript_id, gene_info in gtf_info.items():
         # gene_info: {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
         chr_ = gene_info['chr']
         strand = gene_info['strand']
+        gene_name = gene_info['gene_name']
         n_transcript += 1
-        if n_transcript % 1000 == 0:
-            # modify here            
-            logger.info(f'Processing gene {n_transcript} / {len(gtf_info)}')
 
-        # skip the gene if the chromosome is not in the fasta file
-        if chr_ not in fa_idx:
-            invalid_chr_transcript += 1
-            continue
         gene_raw_s, gene_raw_e = gene_info['start'], gene_info['end']
         up_sign = -1 if strand == '+' else 1
         down_sign = 1 if strand == '+' else -1
         gene_strand_s = gene_raw_s if strand == '+' else gene_raw_e
         gene_strand_e = gene_raw_e if strand == '+' else gene_raw_s
-        s = bench(s, 'general_gene_info')
         
         gene_seq = get_seqence_from_fa(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e)
-        s = bench(s, 'get_gene_seq')
+
         if gene_seq == 1:
             fail_to_retrieve_seq += 1
             continue
+        # invalid_bases_set = {idx + gene_raw_s for idx, base in enumerate(gene_seq) if base not in valid_bases}
+        if gene_seq.count('N') == 0:
+            gene_seq = None  # no need to check the mappable sites
+        
         pp_str[transcript_id] = []
         gb_str[transcript_id] = []
-        s = bench(s, 'before bed loop')
+
         for fn_lb, fn_bed_count, idx_d, res_chunk in fls:
-            s = time.time()
-            
+            n += 1
+            if n % section_size == 0:
+                now = time.time()
+                prev_time, prev_count = prev
+                time_gap = now - prev_time
+                speed = time_gap * 1000  / (n - prev_count)
+                logger.info(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
+                prev = [now, n]
+
             count_file_info = analysis.out_fls['count_file'][fn_lb] # fn, fh, idx_d, res_chunk
+
             # promoter peak
             promoter_s = gene_strand_s + up_sign * analysis.config['pro_up']
             promoter_e = gene_strand_s + down_sign * (analysis.config['pro_down'] - 1)
             regioin_s, region_e = sorted([promoter_s, promoter_e])
-
-            pro_peak = get_peak(count_file_info, chr_, strand, regioin_s, regioin_e, gene_raw_s, gene_seq, analysis.config['window_size'], analysis.config['step'], analysis.config['mapped_sites_only'], time_cost, already_parsed_windows=already_parsed_windows[fn_lb])
-
-            s = bench(s, 'get_pro_peak')
-            # pro_peak = [max_read_count, mappable_sites, ratio, window_start]
-            # but we need the summit position in this window
-            if pro_peak[0] > 0:
-                summit_pos = get_summit(count_file_info, strand, chr_, pro_peak[3], window_size=analysis.config['window_size'])
-                pro_peak[3] = summit_pos
-            s = bench(s, 'get_pro_summit')
+                        
+            # the pro_peak step use about 600us
+            pro_peak = get_peak(count_file_info, chr_, strand, regioin_s, region_e, gene_raw_s, gene_seq, analysis.config['window_size'], analysis.config['step'], analysis.config['mapped_sites_only'], time_cost, already_parsed_windows=already_parsed_windows[fn_lb], get_summit_flag=True) # [mapped_reads_count, mappable_sites, ratio, summit_pos]
 
             # gene body peak
             gene_body_s = gene_strand_s + down_sign * analysis.config['gb_start']
@@ -349,10 +345,8 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, ):
             region_s, region_e = sorted([gene_body_s, gene_body_e])
 
             gene_body_len = gene_raw_e - gene_raw_s + 1 - analysis.config['gb_start']
-            gene_body_peak = get_peak(count_file_info, chr_, strand, region_s, region_e, gene_raw_s, gene_seq, gene_body_len, analysis.config['step'], analysis.config['mapped_sites_only'], time_cost, already_parsed_windows=already_parsed_windows[fn_lb])
-            # gene_body_peak = [100, 1000, 0.1, 11111] # modify here, remove
-            # s = bench(s, 'get_gb_peak')
-            
+            gene_body_peak = get_peak(count_file_info, chr_, strand, region_s, region_e, gene_raw_s, gene_seq, gene_body_len, analysis.config['step'], analysis.config['mapped_sites_only'], time_cost, already_parsed_windows=already_parsed_windows[fn_lb]) # [mapped_reads_count, mappable_sites, ratio, summit_pos]
+
             pp_str[transcript_id].append(str(pro_peak[0]))
             gb_str[transcript_id] += [str(gene_body_peak[0]), str(gene_body_peak[2])]
             
@@ -371,39 +365,16 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, ):
             except:
                 logger.error(f'invalid row, row = {list(enumerate(row))}, {[row[_] for _ in sorted(fn_peak_float_cols)]}')
                 logger.error(f"transcript_id = {transcript_id}, gene_info = {gene_info}, pro_peak = {pro_peak}, gene_body_peak = {gene_body_peak}")
-                
                 sys.exit(1)
             print(row_str, file=fh_bed_peaks)
-            
-            # calculate p-value and FDR for certain rows
-            ppc = pro_peak[0]
-            gbd = gene_body_peak[2]
-            gbc = gene_body_peak[0]
-            gbc_sum.setdefault(fn_lb, 0)
-            gbc_sum[fn_lb] += gbc
-            
-            # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
-            if ppc > 0:
-                ppc, pp_len, gbc, gb_len = [row[n_gene_cols + _] for _ in [0, 1, 4, 5]] # 2,3,6,7 for normal genes
-                pvalue = groseq_fisherexact_pausing_for_gene(ppc, pp_len, gbc, gb_len)
-            else:
-                pvalue = 'NA'
-            # s = bench(s, 'fisher_exact')
-            
-            pause_pvalue.setdefault(fn_lb, []).append([pvalue, ppc, gbd])
-            fn_peak_rows.setdefault(fn_lb, {'row_idx': 0})
-            row_idx = fn_peak_rows[fn_lb]['row_idx']
-            fn_peak_rows[fn_lb][row_idx] = [row_str, transcript_id, pro_vs_pb]
-            fn_peak_rows[fn_lb]['row_idx'] += 1
 
-    
     if fail_to_retrieve_seq:
         logger.warning(f"Failed to retrieve sequence for {fail_to_retrieve_seq} genes")
     
     if invalid_chr_transcript:
         logger.warning(f"Number of genes with invalid chromosome = {invalid_chr_transcript}")
 
-    return pp_str, gb_str, pause_pvalue, gbc_sum, fn_peak_rows
+    return pp_str, gb_str
 
 def collect_previous_count(analysis, fls):
     """
@@ -514,9 +485,6 @@ def main(args=None):
         
     benchmode = args.bench
     
-    
-    
-    
     # check dependencies
     dependency_status = check_dependency()
     if dependency_status:
@@ -548,8 +516,13 @@ def main(args=None):
     gtf_info_new = {}
     if benchmode:
         ct = 0
-        bench_max_gene = 1000
+        bench_max_gene = 3000
         logger.info(f"Bench mode is on, only process the first {bench_max_gene} genes")
+
+    # prepare fasta file
+    fn_fa = analysis.ref['fa']
+    fa_idx = build_idx_for_fa(fn_fa)
+    fh_fa = open(fn_fa, 'r')
 
     short_genes = 0
     unkown_transcript = 0
@@ -559,11 +532,12 @@ def main(args=None):
     # for k, v in gtf_info.items():
     for k in tmp:
         v = gtf_info[k]
+        if v['chr'] not in fa_idx:
+            continue
         if k[0] != 'N' and k[:3] != 'ENS':
             # unkown_transcript += 1
             # unkown_transcript_list.append(k)
             continue
-        
         if v['end'] - v['start'] + 1 >= analysis.config['min_gene_len']:
             gtf_info_new[k] = v
             if benchmode:
@@ -578,91 +552,35 @@ def main(args=None):
     else:
         logger.info(f"Total number of genes after filtering: {len(gtf_info_new)}")
     gtf_info = gtf_info_new
-    # logger.info(sorted(gtf_info)[:10])
-    
-    # with open('unkown_transcript.txt', 'w') as o:
-    #     print('\n'.join(unkown_transcript_list), file=o)
-    
-    # sys.exit(1)
-    
-    # prepare fasta file
-    fn_fa = analysis.ref['fa']
-    n_gene_cols = analysis.n_gene_cols
-    fh_fa = open(fn_fa, 'r')
-    lb = fn_fa.rsplit('.', 1)[0]
-    fn_idx = f'{lb}.idx.pkl'
-    if os.path.exists(fn_idx) and os.path.getsize(fn_idx) > 100:
-        with open(fn_idx, 'rb') as o:
-            fa_idx = pickle.load(o)
-    else:
-        logger.info(f'building index for fasta file: {fn_fa}')
-        fa_idx = build_idx_for_fa(fn_fa)
- 
     fls = analysis.input_fls # element is [fn_bed, idx_bed, fn_lb]
 
+    n_gene_cols = analysis.n_gene_cols
+
+
+
     if not analysis.skip_get_mapped_reads:
-        logger.error(f'fail to load prev mapped reads count')
-        sys.exit(1)
-        pp_str, gb_str, pause_pvalue, gbc_sum, fn_peak_rows = process_bed_files(gtf_info, fa_idx)
+        logger.info(f'Getting pp_gb count')
+        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols)
     else:
         logger.debug('Re-use previous mapped reads count')
-        pp_str, gb_str, pause_pvalue, gbc_sum, fn_peak_rows = collect_previous_count(analysis, fls)
+        pp_str, gb_str = collect_previous_count(analysis, fls)
 
-
-    logger.info('debug')
-    sys.exit(1)
-    logger.info(f'processing bed files done')
     # close file handle
     for fn_lb, fn_bed_count, idx_d, res_chunk in fls:
         analysis.out_fls['bed_peaks'][fn_lb]['fh'].close()
         analysis.out_fls['count_file'][fn_lb]['fh'].close()
     fh_fa.close()
     
-    # s = bench(s, 'close file handle')
-    
+    return 
+
     # calculate FDR
     logger.info('Calculating FDR')
-    pause_index = {} # key = transcript_id, v = [pause_index, p_value, fdr], pause_index = ratio_pp / ratio_gb
+    for fn_lb, fn_bed_count, idx_d, res_chunk in fls:
+        fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
+        fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
+        header_fdr = analysis.out_fls['fdr'][fn_lb]['header']
+        get_FDR_per_sample(fn_peak, fn_fdr, header_fdr)
 
-    for fn_lb, pvalues in pause_pvalue.items():
-        pause_index[fn_lb] = {}
-        file_gbc_sum = gbc_sum[fn_lb]
-        valid_rows = [[], []] # 0 = pvalue, 1 = idx
-        invalid_rows = set()
-        
-        # only filter for regular genes, long eRNA will keep all rows
-        if analysis.longerna:
-            valid_rows[0] = [_[0] for _ in pvalues]
-            valid_rows[1] = list(range(len(pvalues)))
-        else:
-            for idx, (pvalue, ppc, gbd) in enumerate(pvalues):
-                if ppc > 0 and gbd * 10_000_000/file_gbc_sum > 0.004 and pvalue is not None:
-                    valid_rows[0].append(pvalue)
-                    valid_rows[1].append(idx)
-                else:
-                    invalid_rows.add(idx)
-        if len(valid_rows[0]) < 10:
-            logger.warning(f'Number of rows with pvalue  less than 10, fn_lb = {fn_lb}')
-        fdr_all = calc_FDR(valid_rows[0])
-        pvalue_fdr_str = sorted(zip(valid_rows[1], valid_rows[0], fdr_all), key=lambda x: x[2]) # sort by FDR
-
-        fh_fdr = analysis.out_fls['fdr'][fn_lb]['fh']
-        header = analysis.out_fls['fdr'][fn_lb]['header']
-        print('\t'.join(header), file=fh_fdr)
-        for idx, pvalue, fdr in pvalue_fdr_str:
-            row_str, transcript_id, pro_vs_pb = fn_peak_rows[fn_lb][idx]
-            print(row_str + f'\t{pvalue}\t{fdr}', file=fh_fdr)
-            pause_index[fn_lb][transcript_id] = [pro_vs_pb, pvalue, fdr]
-        for idx in invalid_rows:
-            row_str, transcript_id, pro_vs_pb = fn_peak_rows[fn_lb][idx]
-            print(row_str + '\tNA\tNA', file=fh_fdr)
-            pause_index[fn_lb][transcript_id] = [pro_vs_pb, 'NA', 'NA']
-        fh_fdr.close()
-    # s = bench(s, 'calculate_FDR')
-    
-    logger.error('exit')
-    sys.exit(1)
-    
     
     # count_pp_gb
     logger.info('Building count_pp_gb')
@@ -683,10 +601,17 @@ def main(args=None):
             row = [transcript_id]
             if not analysis.longerna:
                 row.append(gene_info['gene_name'])
-            row +=  [gene_info['chr'], gene_info['start'], gene_info['end'], gene_info['strand']]
+            row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
             row += pp_str[transcript_id] + gb_str[transcript_id]
             print('\t'.join(row), file=o)
-    # s = bench(s, 'count_pp_gb')
+
+    tmp = json.dumps(time_cost, indent=3)
+    print(tmp)
+    logger.info('debug')
+    sys.exit(1)
+    logger.info(f'processing bed files done')
+    
+    
     
     # run change_pp_gb
     rep1 = len(analysis.control_bed)

@@ -133,6 +133,30 @@ def build_idx_for_fa(fn_fa):
     line_width = {}
     # line_width,  the most frequent sequence in each line. the width does not include the end newline symbol
     # other keys = each chr, removed the chr prefix,  the value is like [s_byte, length]
+    if '.gz' in fn_fa:
+        logger.error(f'Please use decompressed fasta file')
+        sys.exit(1)
+        return None
+
+    lb = os.path.basename(fn_fa).rsplit('.', 1)[0]
+    fn_fa = os.path.abspath(fn_fa)
+    
+    # check if have write permission to the folder of the fa file
+    if not os.access(os.path.dirname(fn_fa), os.W_OK):
+        home = os.path.expanduser("~")
+        fa_out_dir = f'{home}/.nrsa'
+        os.makedirs(fa_out_dir, exist_ok=True)
+    else:
+        fa_out_dir = os.path.dirname(fn_fa)
+        
+    fn_idx = f'{fa_out_dir}/{lb}.idx.pkl'
+    if os.path.exists(fn_idx):
+        logger.debug(f'loading fasta index file: {fn_idx}')
+        with open(fn_idx, 'rb') as f:
+            res = pickle.load(f)
+            return res
+
+    logger.info(f'building index for {fn_fa}')
     chr_ = None
     with open(fn_fa) as f:
         while True:
@@ -154,8 +178,6 @@ def build_idx_for_fa(fn_fa):
     word_wrap, freq = tmp[0]
     logger.debug(f'word wrap = {word_wrap}, lines width = {tmp}')
     res['line_width'] = word_wrap
-    lb = fn_fa.rsplit('.', 1)[0]
-    fn_idx = f'{lb}.idx.pkl'
     with open(fn_idx, 'wb') as o:
         pickle.dump(res, o)
     return res
@@ -163,6 +185,7 @@ def build_idx_for_fa(fn_fa):
 def get_seqence_from_fa(idx, fh, chr_, start, end):
     """
     idx is from loading of the json {fn_fa}.idx.json file, fh is the opened file handle of the fasta file
+    already converted to uppercase
     """
     chr_ = refine_chr(chr_)
     line_width = idx['line_width']
@@ -179,7 +202,7 @@ def get_seqence_from_fa(idx, fh, chr_, start, end):
     lines_span = lines_end - lines_start
     start_byte = start + byte_0 -1 + lines_start
     fh.seek(start_byte)
-    return fh.read(len1 + lines_span).replace('\n', '')
+    return fh.read(len1 + lines_span).replace('\n', '').upper()
 
 def build_idx_for_bed(fn_bed, fn_idx, step=100):
     """
@@ -299,10 +322,24 @@ def bench(s, lb, d):
     d[lb] += now - s
     return now
 
+def get_FDR_per_sample(fn_peak, fn_fdr, header_fdr):
+    """
+    get the pvalue and FDR based on the peak file, retain only 1 transcript per gene, (keep the transcript with the highest pp count)
+    """
+    df_peak = pd.read_csv(fn_peak, sep='\t')
+    # collapse genes
+    # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
+    # NM_000014.5	A2M	40	50	0.8	12-:0	43	47522	0.0009	884.13023
+    df_peak = df_peak.groupby('Gene').apply(lambda x: x.loc[x['ppc'].idxmax()], )
+    
+
+
 def get_peak(count_file_info, chr_, strand, start, end, s_gene, gene_seq, window_size, step_size, only_mapped=False, time_cost=None, already_parsed_windows=None, get_summit_flag=False):
     """
     use the new method, i.e. in the preprocessing step, get the mapped reads count for each 10bp window, then directly sum the mapped reads count for the new window
     """
+    dummy = [0,0,0,100]  # for test purpose, return this dummy value
+    
     # fn_lb, fn_bed_count, idx_d, res_chunk
     # count_file_info = {'fn': fn_bed_count, 'idx_d': idx_d, 'res_chunk': res_chunk, 'fh':  file handle}
     peak_window = [None, None] # [mapped_reads_count, window_start_pos]
@@ -315,71 +352,97 @@ def get_peak(count_file_info, chr_, strand, start, end, s_gene, gene_seq, window
     
     k_whole = f'{chr_}@{strand}@{start}@{end}'
     if already_parsed_windows and k_whole in already_parsed_windows['peak']:
+        time_cost['reused']['whole_region'] += 1
         return already_parsed_windows['peak'][k_whole]
     
     for pos in range(start, end - window_size + 2, step_size):
         s_window, e_window = pos, pos + window_size - 1
-        k = f'{chr_}@{strand}@{s_window}@{e_window}'
-        if already_parsed_windows and k in already_parsed_windows:
-            ct_mapped_read = already_parsed_windows[k]
-        else:
+        # k = f'{chr_}@{strand}@{s_window}@{e_window}'
+        # continue
+        # if already_parsed_windows and k in already_parsed_windows:
+        #     ct_mapped_read = already_parsed_windows[k]
+        #     time_cost['reused']['window'] += 1
+        # else:
+            # continue
             # each window, split into 3 parts
             # part1 = s_window to the first bin boundary
             # part2 = the bins in the window
             # part3 = the last bin boundary to e_window
-            bin_start = s_window // count_chunk_size
-            bin_end = e_window // count_chunk_size
-            
-            window_both_side = []
-            p2_bin_list = []
-            ct_mapped_read = 0
-            
-            p1_s, p1_e = (s_window, (bin_start + 1) * count_chunk_size - 1)
-            if bin_end == bin_start:
-                window_both_side.append([p1_s, window_e])
-                # there is no p2 and p3
+        
+        bin_start = s_window // count_chunk_size
+        bin_end = e_window // count_chunk_size
+        
+        window_both_side = []
+        p2_bin_list = []
+        ct_mapped_read = 0
+        
+        p1_s, p1_e = (s_window, (bin_start + 1) * count_chunk_size - 1)
+        if bin_end == bin_start:
+            window_both_side.append([p1_s, e_window])
+            # there is no p2 and p3
+        else:
+            p3_s, p3_e = ((bin_end) * count_chunk_size, e_window)
+            window_both_side.append([p1_s, p1_e])
+            window_both_side.append([p3_s, p3_e])
+            if bin_end > bin_start + 1:
+                p2_bin_list = range(bin_start + 1, bin_end)
+        for ps, pe in window_both_side:
+            k1 = f'{chr_}@{strand}@{ps}@{pe}'
+            if already_parsed_windows and k1 in already_parsed_windows:
+                ct_mapped_read += already_parsed_windows[k1]
+                time_cost['reused']['side'] += 1
             else:
-                p3_s, p3_e = ((bin_end) * count_chunk_size, e_window)
-                window_both_side.append([p1_s, p1_e])
-                window_both_side.append([p3_s, p3_e])
-                if bin_end > bin_start + 1:
-                    p2_bin_list = range(bin_start + 1, bin_end)
-                    
-            for ps, pe in window_both_side:
-                k1 = f'{chr_}@{strand}@{ps}@{pe}'
-                if already_parsed_windows and k1 in already_parsed_windows:
-                    ct_mapped_read += already_parsed_windows[k1]
-                else:
-                    ct_mapped_read += get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, ps, pe)
-            if p2_bin_list:
-                for p2_bin in p2_bin_list:
-                    ct_mapped_read += count_file_chunk[chr_][strand].get(p2_bin, 0)
-            already_parsed_windows[k] = ct_mapped_read
+                ict_side = get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, ps, pe)
+                ct_mapped_read += ict_side
+                already_parsed_windows[k1] = ict_side
+        if p2_bin_list:
+            for p2_bin in p2_bin_list:
+                ct_mapped_read += count_file_chunk[chr_][strand].get(p2_bin, 0)
+            
         if peak_window[0] is None or ct_mapped_read > peak_window[0]:
                 peak_window = [ct_mapped_read, pos]
 
-    # status['total_parsed_reads'] = time_cost['n_parsed']
     if not peak_window[0]:
-        ires = [0, 0, 0, start if strand == '+' else end]
+        ires = [0, 0, 0]
+        summit_pos = start if strand == '+' else end
+        summit_pos_str = f'{chr_}{strand}:{summit_pos}'
+        ires.append(summit_pos_str)
         already_parsed_windows['peak'][k_whole] = ires
         return ires
     s_peak_window = peak_window[1]
     e_peak_window = s_peak_window + window_size - 1
+    
     if get_summit_flag and peak_window[0] > 0:
         summit_pos = get_summit(count_file_fh, count_file_idx, chr_, strand, s_peak_window, e_peak_window)
     else:
         summit_pos = s_peak_window
+    summit_pos_str = f'{chr_}{strand}:{summit_pos}'
     
-    seq_window = gene_seq[s_peak_window - s_gene: e_peak_window - s_gene + 1].upper()
-    # s = bench(s, 'get_window_seq', time_cost)
-    mappable_sites = seq_window.count('A') + seq_window.count('T') + seq_window.count('G') + seq_window.count('C')
+    
+
+    # use the precalculated invalid bases set, but it is actually slower
+    # if invalid_bases_set:
+    #     invalid_bases_in_window = len(set(range(s_peak_window, e_peak_window + 1)) & invalid_bases_set)
+    # else:
+    #     invalid_bases_in_window = 0
+    # mappable_sites = window_size - invalid_bases_in_window
+    if gene_seq:
+        window_seq = gene_seq[s_peak_window - s_gene: e_peak_window - s_gene + 1]
+        mappable_sites = window_seq.count('A') + window_seq.count('T') + window_seq.count('G') + window_seq.count('C')
+    else:
+        mappable_sites = window_size
+
     ratio = peak_window[0] / mappable_sites if mappable_sites else 0
-    ires = [peak_window[0], mappable_sites, ratio, summit_pos]
+    ires = [peak_window[0], mappable_sites, ratio, summit_pos_str] # [mapped_reads_count, mappable_sites, ratio, summit_pos]
     already_parsed_windows['peak'][k_whole] = ires
+
     return ires
 
-
 def get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, start, end):
+    # logger.warning('mofify here')
+    return 20
+
+def get_mapped_reads_real(count_file_fh, count_file_idx, chr_, strand, start, end):
     """
     get the coverage of the region, the coverage is the number of **read ends** at each position in this region
     each call will cost around 100us.
@@ -1356,8 +1419,22 @@ def process_gtf(fn_gtf):
     """
 
     err = {'no_transcript_id': 0, 'no_gene_name': 0, 'invalid_line_format': 0, 'invalid_strand': 0}
-
-    fn_gtf_pkl = f'{fn_gtf.rsplit(".", 1)[0]}.pkl'
+    fn_gtf = os.path.abspath(fn_gtf)
+    # check if have write permission to the folder of the gtf file
+    if not os.access(os.path.dirname(fn_gtf), os.W_OK):
+        home = os.path.expanduser("~")
+        gtf_out_dir = f'{home}/.nrsa'
+        os.makedirs(gtf_out_dir, exist_ok=True)
+    else:
+        gtf_out_dir = os.path.dirname(fn_gtf)
+    
+    if 'gtf' not in fn_gtf.rsplit('.', 2)[-2:]:
+        logger.error(f'the gtf file should have the extension of .gtf: {fn_gtf}')
+        sys.exit(1)
+        return None, err
+    
+    fn_gtf_lb = os.path.basename(fn_gtf).replace('.gz', '').replace('.gtf', '')
+    fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
     if os.path.exists(fn_gtf_pkl):
         logger.debug('loading gtf from pickle')
         with open(fn_gtf_pkl, 'rb') as f:
@@ -1373,14 +1450,14 @@ def process_gtf(fn_gtf):
         'strand': 6,
         'attribute': 8,
     }
-    res = {}  # key = transcript_id, v = {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
+    res_raw = {}  # key = transcript_id, v = {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
     
     with gzip.open(fn_gtf, 'rt') if fn_gtf.endswith('.gz') else open(fn_gtf) as f:
         for i in f:
-            i = i.strip()
-            if i[0] == '#' or not i:
-                continue
-            line = i.split('\t')
+            if i[0] != '#' or not i:
+                break
+        for i in f:
+            line = i.strip().split('\t')
             # chr1    hg19_ncbiRefSeq    exon    66999252    66999355    0.000000    +    .    gene_id "NM_001308203.1"; transcript_id "NM_001308203.1"; gene_name "SGIP1";
             # 1       ensembl_havana  gene    11869   14412   .       +       .       gene_id "ENSG00000223972"; gene_version "4"; gene_name "DDX11L1"; gene_source "ensembl_havana"; gene_biotype "pseudogene";
             line_err = None
@@ -1393,6 +1470,8 @@ def process_gtf(fn_gtf):
             if strand not in {'+', '-'}:
                 line_err = 'invalid_strand'
             chr_ = refine_chr(chr_)
+            if '_' in chr_:
+                continue # skip the line if the chr_ contains underscore (e.g. chr1_KI270706v1_random)
 
             attributes = attribute_raw.rstrip(';').split(';')
             gene_name = transcript_id = None
@@ -1415,24 +1494,34 @@ def process_gtf(fn_gtf):
                 err[line_err] += 1
                 continue
             
-            # {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
+            key_uniq = f'{chr_}@{strand}@{start}@{end}'
+            # {'chr': '', 'strand': '', 'gene_name': '', 'start': 0, 'end': 0}
+            res_raw.setdefault(gene_name, {}).setdefault(key_uniq, {'transcript': [], 'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
+            res_raw[gene_name][key_uniq]['transcript'].append(transcript_id)
             
-            # if the chr_ in previous transcript_id contains underscore (e.g. chr1_KI270706v1_random), then replace it
-            replace_prev = 0
-            if transcript_id in res and '_' in res[transcript_id]['chr'] and '_' not in chr_:
-                replace_prev = 1
-            
-            if replace_prev or transcript_id not in res:
-                res[transcript_id] = {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': None, 'end': 0}
-            elif chr_ != res[transcript_id]['chr']:
-                continue # skip the line if the chr_ is different from the previous one
-            
-            ires = res[transcript_id]
-            if ires['start'] is None or start < ires['start']:
+            ires = res_raw[gene_name][key_uniq]
+            if chr_ != ires['chr']:
+                continue
+
+            if start < ires['start']:
                 ires['start'] = start
             if end > ires['end']:
                 ires['end'] = end
-            res[transcript_id] = ires
+
+    # merge transcripts with same start and end position
+    res = {}
+    n_merged = 0
+    for gn, v1 in res_raw.items():
+        for v2 in v1.values():
+            ntmp = len(v2['transcript'])
+            if ntmp > 1:
+                n_merged += ntmp - 1
+            transcript_id = ';'.join(v2['transcript'])
+            v2['transcript'] = transcript_id
+            res[transcript_id] = {k: v2[k] for k in ['chr', 'strand', 'gene_name', 'start', 'end']}
+    
+    
+    logger.warning(f'merged {n_merged} transcripts with same start and end position')
     
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)
@@ -1562,12 +1651,14 @@ def pre_count_for_bed(fh_bed, fn_lb, pwout):
             idx_strand = 0 if strand == '+' else 1
             res_bed[chr_][read_end][idx_strand] += 1
 
+        # refine the chr_
+        res_bed = {refine_chr(k): v for k, v in res_bed.items()}
+        res_chunk = {refine_chr(k): v for k, v in res_chunk.items()}
 
         for chr_ in sorted(res_bed):
             # dump the res_bed_chr to file
             logger.debug(f'{fn_lb} - dumping the pos list for chr {chr_}')
             res_bed_chr = res_bed[chr_]
-            chr_ = refine_chr(chr_)
             if chr_[:2].lower() == 'gl':
                 continue
             file_out_pos = dump_pos_to_file(chr_, res_bed_chr, fo, file_out_pos)
@@ -1599,8 +1690,9 @@ def process_input(pwout, fls, bed_idx_step=100):
             tmp = pre_count_for_bed(None, fn_lb, pwout)
             if tmp is not None:
                 res.append(tmp)
+                continue
         if fn.endswith('.bam'):
-            logger.info(f'Converting {fn} to bed format')
+            logger.info(f'Converting {fn}')
             cmd = f"""bedtools bamtobed -i {fn}"""
             with Popen(cmd, shell=True, stdout=PIPE, text=True) as p:
                 with p.stdout as fh_bed:

@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import fisher
 import bisect
+from statsmodels.stats.multitest import multipletests
 pw_code = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -381,16 +382,6 @@ def bench(s, lb, d):
     d[lb] += now - s
     return now
 
-def get_FDR_per_sample(fn_peak, fn_fdr, header_fdr):
-    """
-    get the pvalue and FDR based on the peak file, retain only 1 transcript per gene, (keep the transcript with the highest pp count)
-    """
-    df_peak = pd.read_csv(fn_peak, sep='\t')
-    # collapse genes
-    # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
-    # NM_000014.5	A2M	40	50	0.8	12-:0	43	47522	0.0009	884.13023
-    df_peak = df_peak.groupby('Gene').apply(lambda x: x.loc[x['ppc'].idxmax()], )
-    
 
 def get_peak_method1(count_per_base, chr_, strand, s, e):
     # sum from the per-base pre-count dict
@@ -399,7 +390,7 @@ def get_peak_method1(count_per_base, chr_, strand, s, e):
     res_chr = count_per_base[chr_]
     return sum([res_chr.get(i, [0, 0])[strand_idx] for i in range(s, e + 1)])
 
-def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e):
+def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e, bin_size):
     # compared to get_peak_method1 function
     # test a 1.5kb region to get the mapped reads count
     # method2, combination of per-site count and bin_collected count (bin_size = 10), cost 19us 
@@ -411,7 +402,7 @@ def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e):
     
     
     # res is outer dict, stores the per_site count
-    bin_size = count_bin['bin_size']
+    # bin_size = count_bin['bin_size']
     bin_start = s // bin_size
     bin_end = e // bin_size
     if bin_end - bin_start < 2:
@@ -429,73 +420,45 @@ def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e):
         bin_list = range(bin_start + 1, bin_end + 1)
     return sum([count_per_base[chr_].get(i, [0, 0])[strand_idx] for i in points]) + sum([count_bin[chr_].get(i, [0, 0])[strand_idx] for i in bin_list])
 
-def get_peak(count_per_base, count_bin, gene_info, window_size, step_size):
+def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq, window_size, step_size, bin_size, prev_pp_peak):
     # {'chr': '5', 'strand': '-', 'gene_name': 'PFDN1', 'start': 139682626, 'end': 139682689}
     # pro_up = pro_down = 500
     # gb_start_pos = 1000 # count the gb density from 1000bp downstream of the gene start site
     # using the already_parsed_windows will cost more time
 
-    chr_, strand, gene_start_raw, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'strand_idx', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'gb_len_mappable', 'gene_seq']]
-    
-    # because the gtf already merged transcripts with same start and end position, so there won't be any repeated run
-    # gbc = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, gb_start, gb_end)
-    # if gbc == 0:
-    #     gbd = 0
-    # else:
-    #     gbd = gbc / gb_len_mappable
-    
-    gbc = gbd = 0
-    # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
-
-    # return gbc, gbd, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
-
-    # k_pp_region = f'{chr_}@{strand}@{pp_start}@{pp_end}'
-    # if k_pp_region in already_parsed_windows['pp_region']:
-    #     return gbc, gbd, already_parsed_windows['pp_region'][k_pp_region]
-
-    prev = [0, pp_start]  # [mapped_reads_count, window_start_position]
-    for window_s in range(pp_start, pp_end - window_size + 2, step_size):
-        window_e = window_s + window_size - 1
-        
-        # k_window = f'{chr_}@{strand}@{window_s}@{window_e}'
-        # if k_window in already_parsed_windows:
-        #     ct_mapped_reads = already_parsed_windows[k_window]
-        # else:
-        #     ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
-        
-        ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
-
-        # ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
-        if ct_mapped_read > prev[0]:
-            prev = [ct_mapped_read, window_s]
-
-    summit_pos, summit_count = prev[1], 0  # default value, when there is no mapped reads in whole region
-    
-    if prev[0] > 0:
-        for pos in range(prev[1], prev[1] + window_size):
-            ict = count_per_base[chr_].get(pos, [0, 0])[strand_idx]
-            if ict > summit_count:
-                summit_pos, summit_count = pos, ict
-        
-        if gene_seq:
-            window_seq = gene_seq[prev[1] - gene_start_raw: prev[1] + window_size - gene_start_raw]
-            mappable_sites = window_size - window_seq.count('N')
-            ppd = prev[0] / mappable_sites if mappable_sites else 0
-        else:
-            mappable_sites = window_size
-            ppd = prev[0] / mappable_sites
-        ppd = round(ppd, 4)
+    gbc = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, gb_start, gb_end, bin_size=bin_size)
+    if gbc == 0:
+        gbd = 0
     else:
-        mappable_sites = window_size
-        ppd = 0
+        gbd = gbc / gb_len_mappable
+    # gbc = gbd = 0
+    k_pp_region = f'{chr_}{strand}:{pp_start}'
     
+    
+    # get all the sites count in pp region
+    pp_region_count = [count_per_base[chr_].get(i, [0, 0])[strand_idx] for i in range(pp_start, pp_end + 1)]
+    window_ct = [(i, sum(pp_region_count[i: i + window_size])) for i in range(0, pp_end - pp_start - window_size + 2, step_size)]
+    peak_window_start, ppc  = max(window_ct, key=lambda _: _[1]) 
+    peak_window_ct = [(i, pp_region_count[i]) for i in range(peak_window_start, peak_window_start + window_size)]
+    summit_pos, summit_count = max(peak_window_ct, key=lambda _: _[1])
+    summit_pos += pp_start
     summit_pos_str = f'{chr_}{strand}:{summit_pos}'
+    
+    if ppc == 0:
+        ppd = 0
+    elif gene_seq:
+        peak_windows_start_abs = peak_window_start + pp_start - gene_raw_s
+        mappable_sites = window_size - gene_seq[peak_windows_start_abs: peak_windows_start_abs + window_size].count('N')
+        ppd = ppc / mappable_sites
+    else:
+        ppd = ppc / window_size
 
-    pp_res = {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
-    # already_parsed_windows['pp_region'][k_pp_region] = pp_res
-    # summit = [(pos, count_per_base[chr_].get(pos, [0, 0])[strand_idx]) for pos in range(prev[1], prev[1] + window_size)]
-    # summit = sorted(summit, key=lambda _: _[1], reverse=True)[0]
-    return gbc, gbd, pp_res
+    pp_res = {'ppc': ppc, 'ppd': ppd, 'mappable_sites': window_size, 'summit_pos': summit_pos, 'summit_count': summit_count}
+    # prev_pp_peak[k_pp_region] = pp_res
+    # gbc = gbd = 0
+    # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
+    return gbc, gbd,  pp_res
+
 
 def get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, start, end):
     """
@@ -940,14 +903,13 @@ def groseq_fisherexact_pausing_for_gene(c1, l1, c2, l2):
     per run, is about 1ms, so it is quite slow., 1-2ms per run
     user new fisher package, the speed is 100x faster (6us per call)
     must make sure the input are all non-zero
+    the pvalue is slightly different from R fisher.test(x, alternative='two.sided') esp. for small pvalues
     """
-    # if c1 == 0 or c2 == 0 or l1 == 0 or l2 == 0:
-    #     return 'NA'
-    # else:
-        # null hypothesis: the pause read count is uniformly distributed in the gene body and the promoter region
-
+    if not all([c1, l1, c2, l2]):
+        return np.nan
+    # null hypothesis: the pause read count is uniformly distributed in the gene body and the promoter region
     expectC1 = round(l1 * (c1 + c2) / (l1 + l2))
-    expectC2 = (c1 + c2 - expectC1)
+    expectC2 = c1 + c2 - expectC1
     # default = two-sided
     return fisher.pvalue(c1, expectC1, c2, expectC2).two_tail
 
@@ -972,7 +934,7 @@ def calc_FDR(pvalues, with_na=True):
     with_na, will first filter out the invalid pvalues, and then map the pvalues back to the original index
     """
     
-    from statsmodels.stats.multitest import multipletests
+    
     if not with_na:
         return multipletests(pvalues, method='fdr_bh')[1]
     
@@ -989,6 +951,25 @@ def calc_FDR(pvalues, with_na=True):
     fdr = multipletests(pvalues_valid, method='fdr_bh')[1]  # return is a tuple, (reject, corrected p-values, alphaSidak, alphaBonf )
     fdr_all = ['NA' if idx not in idx_map else fdr[idx_map[idx]] for idx in range(len(pvalues))]
     return fdr_all
+
+
+def get_FDR_per_sample(fn_peak, fn_fdr, header_fdr):
+    """
+    get the pvalue and FDR based on the peak file, retain only 1 transcript per gene, (keep the transcript with the highest pp count)
+    """
+    df_peak = pd.read_csv(fn_peak, sep='\t')
+    # collapse genes
+    # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
+    # NM_000014.5	A2M	40	50	0.8	12-:0	43	47522	0.0009	884.13023
+    idx = df_peak.groupby('Gene')['ppc'].idxmax()
+    df_peak_gene = df_peak.loc[idx]
+    df_peak_gene['pvalue'] = df_peak_gene.apply(lambda x: groseq_fisherexact_pausing_for_gene(x['ppc'], x['ppm'], x['gbc'], x['gbm']), axis=1)
+    
+    pvals = df_peak_gene['pvalue'].dropna()
+    fdr = multipletests(pvals, method='fdr_bh')[1]
+    df_peak_gene.loc[pvals.index, 'FDR'] = fdr
+    df_peak_gene.to_csv(fn_fdr, sep='\t', index=False)
+
 
 
 def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads=10, filter_out_low_expression=False, 
@@ -1638,45 +1619,41 @@ def get_lb(fn):
 
 
 
-def pre_count_for_bed(fh_bed, fn_lb, pwout):
+def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
     """
     fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
     process the bed file, and get the count of the read end regarding strand.
     will export 2 files, 
     1. dict, key = chr, k2 = strand, k3 = chunk_number. value = count of reads with read end in this chunk.  the chunk_number is got from position // bin_size  (default chunksize = 10bp)
     2. bed file, record the read end chr, read_end position, strand and the count of reads with this read end position
+    
+    bin_size = 200 # compared bin size of 10, 20, 50, 100 and 200 and 500.  200 is the best, maybe because when getting the gb count, the size fit the distribution
+
     """
-    bin_size = 20 # 20bp bin is faster than 10bp bin, esp for gene_body (long fragment) counting
     fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{bin_size}.pkl'
     fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
-    fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
     
     if os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
         logger.info(f'Loading pre-counting data...')
-        # logger.warning('modify here')
-        # return fn_lb, fn_out_bed, {}, {}
-    
     
         with open(fn_count_per_base, 'rb') as f:
             count_per_base = pickle.load(f)
         with open(fn_count_bin, 'rb') as f:
             count_bin = pickle.load(f)
         logger.info('Loaded.')
-        return fn_lb, fn_out_bed, count_per_base, count_bin
+        return count_per_base, count_bin
 
-    if fh_bed is None:
-        return None
     count_bin = {'bin_size': bin_size}
     count_per_base = {}
 
-    with open(fn_out, 'w') as fo:
+    with open(fn_out_bed, 'w') as fh_bed:
         for i in fh_bed:
             # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
             chr_, s, e, _, _, strand = i[:-1].split('\t')
             strand_idx, read_end = (0, int(e)) if strand == '+' else (1, int(s) + 1)
 
             chunk = read_end // bin_size
-            count_bin.setdefault(chr_, {}).setdefault(chunk, [])
+            count_bin.setdefault(chr_, {}).setdefault(chunk, [0, 0])
             count_bin[chr_][chunk][strand_idx] += 1
 
             count_per_base.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
@@ -1691,7 +1668,22 @@ def pre_count_for_bed(fh_bed, fn_lb, pwout):
         pickle.dump(count_per_base, f)
     with open(fn_count_bin, 'wb') as f:
         pickle.dump(count_bin, f)
-    return fn_lb, fn_out_bed, count_per_base, count_bin
+    return count_per_base, count_bin
+
+def build_bin_dict(pw_out, fn_lb, bin_size):
+   # based on the result of bin=10, build bin = 50, 100 dict
+    res = {'bin_size': bin_size}
+    for chr_, v1 in bin10.items():
+        if chr_ == 'bin_size': continue
+        for pos, (p, m) in v1.items():
+            pos = pos * 10 // bin_size
+            res[chr_].setdefault(pos, [0, 0])
+            res[chr_][pos][0] += p
+            res[chr_][pos][1] += m
+    print('dumping')
+    with open(f'{pw_out}/intermediate/bed/{fn_lb}.bin_of_{bin_size}.pkl', 'wb') as o:
+        pickle.dump(res, o)
+    return res
 
 
 def process_input(pwout, fls):
@@ -1699,6 +1691,7 @@ def process_input(pwout, fls):
     process input files, convert bam to bed if needed, and build the index for bed files
     return a list of [fn_bed, idx_bed, fn_lb]
     """
+
     if fls is None or not fls:
         return None
     err = 0
@@ -1708,19 +1701,16 @@ def process_input(pwout, fls):
         fn_lb = get_lb(fn)
         fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
         fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
-
-        if os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
-            tmp = pre_count_for_bed(None, fn_lb, pwout)
-            if tmp is not None:
-                res.append(tmp)
-                continue
+        ires = [fn_lb, fn_out_bed]
+        if os.path.exists(fn_out_bed) and os.path.getsize(fn_out_bed) > 10:
+            res.append(ires)
+            continue
         if fn.endswith('.bam'):
-            if not os.path.exists(fn_out_bed):
-                logger.info(f'Converting {fn}')
-                # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
-                # bedtools sort is faster than linux sort
-                cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
-                os.system(cmd)
+            logger.info(f'Converting {fn}')
+            # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
+            # bedtools sort is faster than linux sort
+            cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
+            os.system(cmd)
         elif fn.endswith('.bed'):
             # check if sorted
             is_sorted = check_is_sorted(fn)
@@ -1734,17 +1724,7 @@ def process_input(pwout, fls):
             logger.error(f"Input file '{fn}' should be in bed or bam format")
             err = 1
             continue
-        with open(fn_out_bed) as fh_bed:
-            logger.info(f'Pre-counting for {fn_lb}')
-            tmp = pre_count_for_bed(fh_bed, fn_lb, pwout)
-            if tmp is not None:
-                res.append(tmp)
-            else:
-                err = 1
-                logger.error(f'Fail to process {fn}, please check the format, the 6th column should be strand, below is the head of the bed file\n')
-                fh_bed.seek(0)
-                for i in range(10):
-                    print(fh_bed.readline()[:-1])
+        res.append(ires)
     if err:
         return None
     return res

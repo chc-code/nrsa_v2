@@ -182,14 +182,21 @@ def build_idx_for_fa(fn_fa):
         pickle.dump(res, o)
     return res
 
+def dummy(idx, fh, chr_, start, end):
+    return 'ATCG'
+
 def get_seqence_from_fa(idx, fh, chr_, start, end):
     """
     idx is from loading of the json {fn_fa}.idx.json file, fh is the opened file handle of the fasta file
     already converted to uppercase
+    for 20k transcripts, get the whole gene sequence cost about 2 second
     """
+    # get_seqence_from_fa.note = 'normal'
+    
     chr_ = refine_chr(chr_)
     line_width = idx['line_width']
     len1 = end - start + 1
+
     if chr_ not in idx:
         logger.error(f'invalid chromosome {chr_}, valid = {sorted(idx.keys())}')
         return 1
@@ -204,9 +211,9 @@ def get_seqence_from_fa(idx, fh, chr_, start, end):
     fh.seek(start_byte)
     return fh.read(len1 + lines_span).replace('\n', '').upper()
 
-def build_idx_for_bed(fn_bed, fn_idx, step=100):
+def build_idx_for_bed_legacy(fn_bed, fn_idx, step=100):
     """
-    built the index for the bed file, the index file is in json format
+    built the index for the bed file, 
     key1 = chr, key2 = position (by default, step size = 1000), value is the byte position in the bed file
     the step size is used to reduce the number of lines to be read, so that the index file is smaller
     for 2G bed files, the index file size is around 9M for chunksize= 1000, and around 50M for chunksize of 100
@@ -214,6 +221,9 @@ def build_idx_for_bed(fn_bed, fn_idx, step=100):
     stratify by strand, for plus strand, the end position is used to get the chunk number, however, because the end position is not sorted, so file byte position of a larger chunk number can be smaller than a smaller chunk number.
     This will lead to problem, e.g. we searched for chunk100, and start from the file byte postion, and we expect we can find all the variants in chunk100 and chunk101 and after, but in fact, some reads in chunk101 or chunk102 can be before this file position.
     The solution is, after building this index, we'll do adjustment to the plus strand index, and for a specific chunk, the byte position is set to be the minimum of the byte position of the chunk and the  chunks after
+    
+    2024-08-13
+    Since the get count step is most time consuming, so we try save the per site count to a dict, to test if the speed will be improved and the memory usage is acceptable
     """
     lb = get_lb(fn_bed)
     res = {'step': step, 'fn_lb': lb}
@@ -251,12 +261,61 @@ def build_idx_for_bed(fn_bed, fn_idx, step=100):
     logger.info(f'Buildingn index done for {os.path.basename(fn_bed)}, chunks = {chunks}')
     return res
 
+def build_idx_for_bed(fn_bed, fn_idx, step=100):
+    """
+    built the index for the bed file, 
+    key1 = chr, key2 = position (by default, step size = 1000), value is the byte position in the bed file
+    the step size is used to reduce the number of lines to be read, so that the index file is smaller
+    for 2G bed files, the index file size is around 9M for chunksize= 1000, and around 50M for chunksize of 100
+    the overall run time will be reduced by 70% for chunksize = 100 compared to chunksize = 1000
+    stratify by strand, for plus strand, the end position is used to get the chunk number, however, because the end position is not sorted, so file byte position of a larger chunk number can be smaller than a smaller chunk number.
+    This will lead to problem, e.g. we searched for chunk100, and start from the file byte postion, and we expect we can find all the variants in chunk100 and chunk101 and after, but in fact, some reads in chunk101 or chunk102 can be before this file position.
+    The solution is, after building this index, we'll do adjustment to the plus strand index, and for a specific chunk, the byte position is set to be the minimum of the byte position of the chunk and the  chunks after
+    
+    2024-08-13
+    Since the get count step is most time consuming, so we try save the per site count to a dict, to test if the speed will be improved and the memory usage is acceptable
+    """
+    lb = get_lb(fn_bed)
+
+    with open(fn_bed) as f:
+        while True:
+            i = f.readline()
+            if not i:
+                break
+            line = i[:-1].split('\t')
+            try:
+                # 3 = id, 4 = score, 5 = strand
+                chr_, start, end, strand = line[0], line[1], line[2], line[5]
+                # chr_, start, strand = line[0], line[1], line[5]
+            except:
+                logger.error(f'{fn_bed}: invalid line format: {line}, position = {f.tell()}')
+                sys.exit(1)
+            ires = res.setdefault(chr_, {}).setdefault(strand, {})
+            read_end = int(start) + 1 if strand == '-' else int(end)
+            chunk = read_end // step   # the chunk number
+            # chunk = (int(start) + 1) // step
+            if chunk not in ires:
+                pos_line_end = f.tell()
+                # the above pos is the start of the next line, so need to get the position of the current line
+                pos_line_start = pos_line_end - len(i)
+                chunks += 1
+                ires[chunk] = pos_line_start
+    res['chunks'] = chunks
+    # update the chromosome name
+    res = {refine_chr(k): v for k, v in res.items()}
+
+    with open(fn_idx, 'wb') as o:
+        pickle.dump(res, o)
+    logger.info(f'Buildingn index done for {os.path.basename(fn_bed)}, chunks = {chunks}')
+    return res
+
 def check_is_sorted(fn_bed):
     """
-    check if the bed file is sorted or not
+    check if the bed file is sorted or not, 
     """
     chr_prev = None
     chr_set = set()
+    logger.info(f'Checking if bed file is sorted: {fn_bed}')
     with open(fn_bed) as f:
         last = 0
         for i in f:
@@ -333,124 +392,120 @@ def get_FDR_per_sample(fn_peak, fn_fdr, header_fdr):
     df_peak = df_peak.groupby('Gene').apply(lambda x: x.loc[x['ppc'].idxmax()], )
     
 
+def get_peak_method1(count_per_base, chr_, strand, s, e):
+    # sum from the per-base pre-count dict
+    ct_sum = 0
+    strand_idx = 0 if strand == '+' else 1
+    res_chr = count_per_base[chr_]
+    return sum([res_chr.get(i, [0, 0])[strand_idx] for i in range(s, e + 1)])
 
-def get_peak(count_file_info, chr_, strand, start, end, s_gene, gene_seq, window_size, step_size, only_mapped=False, time_cost=None, already_parsed_windows=None, get_summit_flag=False):
-    """
-    use the new method, i.e. in the preprocessing step, get the mapped reads count for each 10bp window, then directly sum the mapped reads count for the new window
-    """
-    dummy = [0,0,0,100]  # for test purpose, return this dummy value
+def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e):
+    # compared to get_peak_method1 function
+    # test a 1.5kb region to get the mapped reads count
+    # method2, combination of per-site count and bin_collected count (bin_size = 10), cost 19us 
+    # method1, use the per-site count only, cost 150us
+    # so the method2 is 7 times faster than method1
+    # for small window, e.g 50bp, method2 is still faster, 5.8us vs 10.8us
+    # will also test if will improve when the pre_count bin_size is 20bp
+    # for bin_size = 20, speed is 12.5 and 5.4us for 1.5kb and 50bp window, both faster than bin_size = 10
     
-    # fn_lb, fn_bed_count, idx_d, res_chunk
-    # count_file_info = {'fn': fn_bed_count, 'idx_d': idx_d, 'res_chunk': res_chunk, 'fh':  file handle}
-    peak_window = [None, None] # [mapped_reads_count, window_start_pos]
-    count_file_idx = count_file_info['idx_d']
-    count_file_chunk = count_file_info['res_chunk']
-    count_file_fh = count_file_info['fh']
     
-    count_chunk_size = count_file_chunk['bin_size'] # default = 10bp
-    idx_chunk_size = count_file_idx['bin_size'] # default = 50bp
-    
-    k_whole = f'{chr_}@{strand}@{start}@{end}'
-    if already_parsed_windows and k_whole in already_parsed_windows['peak']:
-        time_cost['reused']['whole_region'] += 1
-        return already_parsed_windows['peak'][k_whole]
-    
-    for pos in range(start, end - window_size + 2, step_size):
-        s_window, e_window = pos, pos + window_size - 1
-        # k = f'{chr_}@{strand}@{s_window}@{e_window}'
-        # continue
-        # if already_parsed_windows and k in already_parsed_windows:
-        #     ct_mapped_read = already_parsed_windows[k]
-        #     time_cost['reused']['window'] += 1
-        # else:
-            # continue
-            # each window, split into 3 parts
-            # part1 = s_window to the first bin boundary
-            # part2 = the bins in the window
-            # part3 = the last bin boundary to e_window
-        
-        bin_start = s_window // count_chunk_size
-        bin_end = e_window // count_chunk_size
-        
-        window_both_side = []
-        p2_bin_list = []
-        ct_mapped_read = 0
-        
-        p1_s, p1_e = (s_window, (bin_start + 1) * count_chunk_size - 1)
-        if bin_end == bin_start:
-            window_both_side.append([p1_s, e_window])
-            # there is no p2 and p3
-        else:
-            p3_s, p3_e = ((bin_end) * count_chunk_size, e_window)
-            window_both_side.append([p1_s, p1_e])
-            window_both_side.append([p3_s, p3_e])
-            if bin_end > bin_start + 1:
-                p2_bin_list = range(bin_start + 1, bin_end)
-        for ps, pe in window_both_side:
-            k1 = f'{chr_}@{strand}@{ps}@{pe}'
-            if already_parsed_windows and k1 in already_parsed_windows:
-                ct_mapped_read += already_parsed_windows[k1]
-                time_cost['reused']['side'] += 1
-            else:
-                ict_side = get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, ps, pe)
-                ct_mapped_read += ict_side
-                already_parsed_windows[k1] = ict_side
-        if p2_bin_list:
-            for p2_bin in p2_bin_list:
-                ct_mapped_read += count_file_chunk[chr_][strand].get(p2_bin, 0)
-            
-        if peak_window[0] is None or ct_mapped_read > peak_window[0]:
-                peak_window = [ct_mapped_read, pos]
-
-    if not peak_window[0]:
-        ires = [0, 0, 0]
-        summit_pos = start if strand == '+' else end
-        summit_pos_str = f'{chr_}{strand}:{summit_pos}'
-        ires.append(summit_pos_str)
-        already_parsed_windows['peak'][k_whole] = ires
-        return ires
-    s_peak_window = peak_window[1]
-    e_peak_window = s_peak_window + window_size - 1
-    
-    if get_summit_flag and peak_window[0] > 0:
-        summit_pos = get_summit(count_file_fh, count_file_idx, chr_, strand, s_peak_window, e_peak_window)
+    # res is outer dict, stores the per_site count
+    bin_size = count_bin['bin_size']
+    bin_start = s // bin_size
+    bin_end = e // bin_size
+    if bin_end - bin_start < 2:
+        return sum([count_per_base[chr_].get(i, [0, 0])[strand_idx] for i in range(s, e + 1)])
+    # the region is covered by 3 or more bins
+    points = []
+    left_mod = s % bin_size
+    right_mod = e % bin_size
+    if left_mod:
+        points += range(s, (bin_start + 1) * bin_size)
+    if right_mod != bin_size - 1:
+        bin_list = range(bin_start + 1, bin_end)
+        points += range(bin_end * bin_size, e + 1)
     else:
-        summit_pos = s_peak_window
-    summit_pos_str = f'{chr_}{strand}:{summit_pos}'
-    
-    
+        bin_list = range(bin_start + 1, bin_end + 1)
+    return sum([count_per_base[chr_].get(i, [0, 0])[strand_idx] for i in points]) + sum([count_bin[chr_].get(i, [0, 0])[strand_idx] for i in bin_list])
 
-    # use the precalculated invalid bases set, but it is actually slower
-    # if invalid_bases_set:
-    #     invalid_bases_in_window = len(set(range(s_peak_window, e_peak_window + 1)) & invalid_bases_set)
+def get_peak(count_per_base, count_bin, gene_info, window_size, step_size):
+    # {'chr': '5', 'strand': '-', 'gene_name': 'PFDN1', 'start': 139682626, 'end': 139682689}
+    # pro_up = pro_down = 500
+    # gb_start_pos = 1000 # count the gb density from 1000bp downstream of the gene start site
+    # using the already_parsed_windows will cost more time
+
+    chr_, strand, gene_start_raw, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'strand_idx', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'gb_len_mappable', 'gene_seq']]
+    
+    # because the gtf already merged transcripts with same start and end position, so there won't be any repeated run
+    # gbc = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, gb_start, gb_end)
+    # if gbc == 0:
+    #     gbd = 0
     # else:
-    #     invalid_bases_in_window = 0
-    # mappable_sites = window_size - invalid_bases_in_window
-    if gene_seq:
-        window_seq = gene_seq[s_peak_window - s_gene: e_peak_window - s_gene + 1]
-        mappable_sites = window_seq.count('A') + window_seq.count('T') + window_seq.count('G') + window_seq.count('C')
+    #     gbd = gbc / gb_len_mappable
+    
+    gbc = gbd = 0
+    # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
+
+    # return gbc, gbd, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
+
+    # k_pp_region = f'{chr_}@{strand}@{pp_start}@{pp_end}'
+    # if k_pp_region in already_parsed_windows['pp_region']:
+    #     return gbc, gbd, already_parsed_windows['pp_region'][k_pp_region]
+
+    prev = [0, pp_start]  # [mapped_reads_count, window_start_position]
+    for window_s in range(pp_start, pp_end - window_size + 2, step_size):
+        window_e = window_s + window_size - 1
+        
+        # k_window = f'{chr_}@{strand}@{window_s}@{window_e}'
+        # if k_window in already_parsed_windows:
+        #     ct_mapped_reads = already_parsed_windows[k_window]
+        # else:
+        #     ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
+        
+        ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
+
+        # ct_mapped_read = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, window_s, window_e)
+        if ct_mapped_read > prev[0]:
+            prev = [ct_mapped_read, window_s]
+
+    summit_pos, summit_count = prev[1], 0  # default value, when there is no mapped reads in whole region
+    
+    if prev[0] > 0:
+        for pos in range(prev[1], prev[1] + window_size):
+            ict = count_per_base[chr_].get(pos, [0, 0])[strand_idx]
+            if ict > summit_count:
+                summit_pos, summit_count = pos, ict
+        
+        if gene_seq:
+            window_seq = gene_seq[prev[1] - gene_start_raw: prev[1] + window_size - gene_start_raw]
+            mappable_sites = window_size - window_seq.count('N')
+            ppd = prev[0] / mappable_sites if mappable_sites else 0
+        else:
+            mappable_sites = window_size
+            ppd = prev[0] / mappable_sites
+        ppd = round(ppd, 4)
     else:
         mappable_sites = window_size
+        ppd = 0
+    
+    summit_pos_str = f'{chr_}{strand}:{summit_pos}'
 
-    ratio = peak_window[0] / mappable_sites if mappable_sites else 0
-    ires = [peak_window[0], mappable_sites, ratio, summit_pos_str] # [mapped_reads_count, mappable_sites, ratio, summit_pos]
-    already_parsed_windows['peak'][k_whole] = ires
-
-    return ires
+    pp_res = {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
+    # already_parsed_windows['pp_region'][k_pp_region] = pp_res
+    # summit = [(pos, count_per_base[chr_].get(pos, [0, 0])[strand_idx]) for pos in range(prev[1], prev[1] + window_size)]
+    # summit = sorted(summit, key=lambda _: _[1], reverse=True)[0]
+    return gbc, gbd, pp_res
 
 def get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, start, end):
-    # logger.warning('mofify here')
-    return 20
-
-def get_mapped_reads_real(count_file_fh, count_file_idx, chr_, strand, start, end):
     """
     get the coverage of the region, the coverage is the number of **read ends** at each position in this region
     each call will cost around 100us.
     """
-    chunk_size = count_file_idx['bin_size']
+    bin_size = count_file_idx['bin_size']
     start, end = sorted([start, end])
-    chunk_s = start // chunk_size
-    chunk_e = end // chunk_size
+    chunk_s = start // bin_size
+    chunk_e = end // bin_size
     strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
     idx_bed_chr = count_file_idx[chr_]
     fh_byte_start = None
@@ -489,10 +544,10 @@ def get_summit(count_file_fh, count_file_idx, chr_, strand, start, end):
     """
     get the positionn with the hightest count in the region
     """
-    chunk_size = count_file_idx['bin_size']
+    bin_size = count_file_idx['bin_size']
     start, end = sorted([start, end])
-    chunk_s = start // chunk_size
-    chunk_e = end // chunk_size
+    chunk_s = start // bin_size
+    chunk_e = end // bin_size
     strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
     idx_bed_chr = count_file_idx[chr_]
 
@@ -802,7 +857,7 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, re
     # use bedtools to split the fn_tss_padding, srcwinnum, use the orignal region_label and bin number
     # after running, the last column is like  origlb_1, origlb_2, ....  _1, and _2 are the bin number
     cmd = f'bedtools makewindows -b {fn_tss_padding} -n {bin_number} -i srcwinnum > {fn_split_bin_bed}'
-    retcode = run_shell(cmd)
+    retcode = run_shell(cmd, echo=True)
     if retcode:  # fail to makewindow
         logger.error(f'failed to run bedtools makewindows')
         return 1
@@ -1450,7 +1505,7 @@ def process_gtf(fn_gtf):
         'strand': 6,
         'attribute': 8,
     }
-    res_raw = {}  # key = transcript_id, v = {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
+    res_raw = {}  # k1 = gene name, k2 = transcript_id, v = {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
     
     with gzip.open(fn_gtf, 'rt') if fn_gtf.endswith('.gz') else open(fn_gtf) as f:
         for i in f:
@@ -1494,13 +1549,11 @@ def process_gtf(fn_gtf):
                 err[line_err] += 1
                 continue
             
-            key_uniq = f'{chr_}@{strand}@{start}@{end}'
             # {'chr': '', 'strand': '', 'gene_name': '', 'start': 0, 'end': 0}
-            res_raw.setdefault(gene_name, {}).setdefault(key_uniq, {'transcript': [], 'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
-            res_raw[gene_name][key_uniq]['transcript'].append(transcript_id)
+            res_raw.setdefault(gene_name, {}).setdefault(transcript_id, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
             
-            ires = res_raw[gene_name][key_uniq]
-            if chr_ != ires['chr']:
+            ires = res_raw[gene_name][transcript_id]
+            if chr_ != ires['chr'] or strand != ires['strand']:
                 continue
 
             if start < ires['start']:
@@ -1512,14 +1565,16 @@ def process_gtf(fn_gtf):
     res = {}
     n_merged = 0
     for gn, v1 in res_raw.items():
-        for v2 in v1.values():
-            ntmp = len(v2['transcript'])
-            if ntmp > 1:
-                n_merged += ntmp - 1
-            transcript_id = ';'.join(v2['transcript'])
-            v2['transcript'] = transcript_id
-            res[transcript_id] = {k: v2[k] for k in ['chr', 'strand', 'gene_name', 'start', 'end']}
-    
+        tmp = {}  # key = unique_id
+        for transcript_id, v2 in v1.items():
+            unique_id = f'{v2["chr"]}_{v2["start"]}_{v2["end"]}_{v2["strand"]}'
+            tmp.setdefault(unique_id, []).append(transcript_id) # these transcripts have the same start and end position
+        for transcript_list in tmp.values():
+            if len(transcript_list) > 1:
+                n_merged += 1
+            transcript_id_new = ';'.join(transcript_list)
+            res[transcript_id_new] = v1[transcript_list[0]]
+
     
     logger.warning(f'merged {n_merged} transcripts with same start and end position')
     
@@ -1565,14 +1620,14 @@ def check_dependency():
     return err
 
 
-def run_shell(cmd):
+def run_shell(cmd, echo=False):
     """
     run shell command and check the return code and stdout stderr
     """
     p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
     stdout, stderr = p.communicate()
     retcode = p.returncode
-    if retcode:
+    if retcode and echo:
         logger.error(f"Error running command: {cmd}")
         logger.error(f"stdout: {stdout.decode()}")
         logger.error(f"stderr: {stderr.decode()}")
@@ -1588,91 +1643,58 @@ def pre_count_for_bed(fh_bed, fn_lb, pwout):
     fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
     process the bed file, and get the count of the read end regarding strand.
     will export 2 files, 
-    1. dict, key = chr, k2 = strand, k3 = chunk_number. value = count of reads with read end in this chunk.  the chunk_number is got from position // chunk_size  (default chunksize = 10bp)
+    1. dict, key = chr, k2 = strand, k3 = chunk_number. value = count of reads with read end in this chunk.  the chunk_number is got from position // bin_size  (default chunksize = 10bp)
     2. bed file, record the read end chr, read_end position, strand and the count of reads with this read end position
     """
-    chunk_size = 10
-    idx_bin_size = 50 # for the per position read end count file (final output), will build the index
-
-    fn_out = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.txt'
-    fn_out_idx = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.idx.pkl'
-    fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{chunk_size}.pkl'
+    bin_size = 20 # 20bp bin is faster than 10bp bin, esp for gene_body (long fragment) counting
+    fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{bin_size}.pkl'
+    fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
+    fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
+    
+    if os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
+        logger.info(f'Loading pre-counting data...')
+        # logger.warning('modify here')
+        # return fn_lb, fn_out_bed, {}, {}
     
     
-    if os.path.exists(fn_out) and os.path.getsize(fn_out) > 10 and os.path.exists(fn_out_idx) and os.path.exists(fn_count_bin):
-        logger.info(f'bed file already pre-counted: {fn_lb}')
-        with open(fn_out_idx, 'rb') as f:
-            idx_d = pickle.load(f)
+        with open(fn_count_per_base, 'rb') as f:
+            count_per_base = pickle.load(f)
         with open(fn_count_bin, 'rb') as f:
-            res_chunk = pickle.load(f)
-        return fn_lb, fn_out, idx_d, res_chunk
+            count_bin = pickle.load(f)
+        logger.info('Loaded.')
+        return fn_lb, fn_out_bed, count_per_base, count_bin
 
     if fh_bed is None:
         return None
-    res_chunk = {'bin_size': chunk_size}
-    res_bed = {}
-    idx_d = {'bin_size': idx_bin_size}  # key = chr, k2 = bin_number, value = byte position in the file
-    file_out_pos = 0 # current byte position in the output count file
+    count_bin = {'bin_size': bin_size}
+    count_per_base = {}
 
-    
-    def dump_pos_to_file(chr_, res_bed_chr, fo, file_out_pos):
-        dump_pos_l = sorted(res_bed_chr)
-        for dp in dump_pos_l:
-            ct = res_bed_chr.pop(dp)
-            chunk = dp // idx_bin_size
-            idx_tmp = idx_d.setdefault(chr_, {})
-            line_out = f'{chr_}\t{dp}\t{ct[0]}\t{ct[1]}\n'
-            if chunk not in idx_tmp:
-                idx_tmp[chunk] = file_out_pos
-            fo.write(line_out)
-            file_out_pos += len(line_out)
-        return file_out_pos
-
-    n = 0
-    section_size, unit = 1_000_000, 'M'
     with open(fn_out, 'w') as fo:
         for i in fh_bed:
             # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
+            chr_, s, e, _, _, strand = i[:-1].split('\t')
+            strand_idx, read_end = (0, int(e)) if strand == '+' else (1, int(s) + 1)
 
-            n += 1
-            if n % section_size == 0:
-                logger.debug(f'Processing {n/section_size:.0f}{unit} lines')
-            chr_, s, e, read_id, _, strand = i[:-1].split('\t')
-            if strand == '+':
-                read_end = int(e)
-            else:
-                read_end = int(s) + 1
+            chunk = read_end // bin_size
+            count_bin.setdefault(chr_, {}).setdefault(chunk, [])
+            count_bin[chr_][chunk][strand_idx] += 1
 
-            chunk = read_end // chunk_size
-            res_chunk.setdefault(chr_, {}).setdefault(strand, {}).setdefault(chunk, 0)
-            res_chunk[chr_][strand][chunk] += 1
-            
-            res_bed.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
-            idx_strand = 0 if strand == '+' else 1
-            res_bed[chr_][read_end][idx_strand] += 1
+            count_per_base.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
+            res_bed[chr_][read_end][strand_idx] += 1
 
         # refine the chr_
-        res_bed = {refine_chr(k): v for k, v in res_bed.items()}
-        res_chunk = {refine_chr(k): v for k, v in res_chunk.items()}
+        count_per_base = {refine_chr(k): v for k, v in count_per_base.items()}
+        count_bin = {refine_chr(k): v for k, v in count_bin.items()}
 
-        for chr_ in sorted(res_bed):
-            # dump the res_bed_chr to file
-            logger.debug(f'{fn_lb} - dumping the pos list for chr {chr_}')
-            res_bed_chr = res_bed[chr_]
-            if chr_[:2].lower() == 'gl':
-                continue
-            file_out_pos = dump_pos_to_file(chr_, res_bed_chr, fo, file_out_pos)
-        
     # dump the pickle
-    with open(fn_out_idx, 'wb') as f:
-        pickle.dump(idx_d, f)
-    
+    with open(fn_count_per_base, 'wb') as f:
+        pickle.dump(count_per_base, f)
     with open(fn_count_bin, 'wb') as f:
-        pickle.dump(res_chunk, f)
-    return fn_lb, fn_out, idx_d, res_chunk
+        pickle.dump(count_bin, f)
+    return fn_lb, fn_out_bed, count_per_base, count_bin
 
 
-def process_input(pwout, fls, bed_idx_step=100):
+def process_input(pwout, fls):
     """
     process input files, convert bam to bed if needed, and build the index for bed files
     return a list of [fn_bed, idx_bed, fn_lb]
@@ -1684,26 +1706,45 @@ def process_input(pwout, fls, bed_idx_step=100):
     lb_map = {}
     for fn in fls:
         fn_lb = get_lb(fn)
-        fn_out = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.txt'
+        fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
+        fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
 
-        if os.path.exists(fn_out) and os.path.getsize(fn_out) > 10:
+        if os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
             tmp = pre_count_for_bed(None, fn_lb, pwout)
             if tmp is not None:
                 res.append(tmp)
                 continue
         if fn.endswith('.bam'):
-            logger.info(f'Converting {fn}')
-            cmd = f"""bedtools bamtobed -i {fn}"""
-            with Popen(cmd, shell=True, stdout=PIPE, text=True) as p:
-                with p.stdout as fh_bed:
-                    res.append(pre_count_for_bed(fh_bed, fn_lb, pwout))
+            if not os.path.exists(fn_out_bed):
+                logger.info(f'Converting {fn}')
+                # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
+                # bedtools sort is faster than linux sort
+                cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
+                os.system(cmd)
         elif fn.endswith('.bed'):
-            with open(fn) as fh_bed:
-                res.append(pre_count_for_bed(fh_bed, fn_lb, pwout))
+            # check if sorted
+            is_sorted = check_is_sorted(fn)
+            if is_sorted:
+                os.system(f'ln -sf {fn} {fn_out_bed} 2>/dev/null')
+            else:
+                logger.warning(f'input bed is not sorted, now sorting...')
+                cmd = f'bedtools sort -i {fn} > {fn_out_bed}'
+                os.system(cmd)
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
             err = 1
             continue
+        with open(fn_out_bed) as fh_bed:
+            logger.info(f'Pre-counting for {fn_lb}')
+            tmp = pre_count_for_bed(fh_bed, fn_lb, pwout)
+            if tmp is not None:
+                res.append(tmp)
+            else:
+                err = 1
+                logger.error(f'Fail to process {fn}, please check the format, the 6th column should be strand, below is the head of the bed file\n')
+                fh_bed.seek(0)
+                for i in range(10):
+                    print(fh_bed.readline()[:-1])
     if err:
         return None
     return res

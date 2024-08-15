@@ -1,4 +1,4 @@
-#! /data/cqs/chenh19/project/nrsa_v2/miniconda3/bin/python3.12 
+#! /usr/bin/env python3
 """
 process PROseq data
 """
@@ -219,6 +219,7 @@ class Analysis:
         self.out_fls = {
             'bed_peaks': {},
             'fdr': {},
+            'count_pp_gb': os.path.join(self.inter_dir, 'count_pp_gb.txt')
         }
         
         
@@ -232,6 +233,7 @@ class Analysis:
             self.longerna_flag_str = ''
         
         self.skip_get_mapped_reads = 1
+        self.skip_count_pp_gb = 0
 
         fn_lb_uniq = set()
         fn_lb_dup = {}
@@ -259,6 +261,11 @@ class Analysis:
             header_fdr = header_bed_peaks + ['pvalue', 'FDR']
             fn_fdr = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_FDR.txt')
             self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'header': header_fdr}
+        
+        fn_count_pp_gb = self.out_fls['count_pp_gb']
+        if not self.overwrite_intermediate and self.skip_get_mapped_reads and os.path.exists(fn_count_pp_gb):
+            self.skip_count_pp_gb = 1
+            
         
         if fn_lb_dup:
             tmp = json.dumps(fn_lb_dup, indent=4)
@@ -420,67 +427,24 @@ def collect_previous_count(analysis, fls):
     pp_str = {} # key = transcript_id, v = the peak count in promoter region for each file. 
     gb_str = {} # key = transcript_id, v = [the peak count in gene body region, ratio] for each file.
 
-    pause_pvalue = {}  # key = fn_bed, used for retrieving the pause raw count file, used as base to add 2 columns for p_value and FDR. v = list of pvalue in each row, used to calculate FDR
-
-    gbc_sum = {} # key = fn_bed, v = sum of gene body count for each gene
-
-    fn_peak_rows = {} # k1 = fn_bed, k2 = row_idx, v = [row_str, transcript_id, pro_vs_pb]
-
-    fisher_cache = {} # key = fisher parameters concatenated, v = pvalue
-    n_loop = 0
-    fisher_run_count = 0
     prev = [time.time(), 0]  # the timestamp and the fisher count of prev logging
-    for fn_lb, fn_bed_count, idx_d, res_chunk in fls:
+    for fn_lb, fn_bed_count in fls:
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
         # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
         fh_bed_peaks.seek(0)
-        header = fh_bed_peaks.readline().strip().split('\t') # header
+        header = fh_bed_peaks.readline()[:-1].split('\t') # header
         idx_ppc = header.index('ppc')
-        gbc_sum.setdefault(fn_lb, 0)
-        pause_pvalue.setdefault(fn_lb, [])
-        fn_peak_rows.setdefault(fn_lb, {})
-        for row_idx, line in enumerate(fh_bed_peaks, 1):
-            n_loop += 1
+        for line in fh_bed_peaks:
             row_str = line.strip()
             row = line.strip().split('\t')
             transcript_id = row[0]
-            ppc, pp_len, ppd, pps, gbc, gb_len, gbd, pro_vs_pb = row[idx_ppc:idx_ppc + 8]
+            ppc, gbc, gbd = [row[_ + idx_ppc] for _ in [0, 4, 6]]
             pp_str.setdefault(transcript_id, [])
             pp_str[transcript_id].append(ppc)
             gb_str.setdefault(transcript_id, [])
             gb_str[transcript_id] += [gbc, gbd]
 
-            fisher_key = (ppc, pp_len, gbc, gb_len)
-            ppc = int(ppc)
-            gbc = int(gbc)
-            pp_len = int(pp_len)
-            gb_len = int(gb_len)
-            gbd = float(gbd)
-            gbc_sum[fn_lb] += gbc
-            
-            if all([ppc, pp_len, gbc, gb_len]):
-                
-                if fisher_key in fisher_cache:
-                    pvalue = fisher_cache[fisher_key]
-                else:
-                    pvalue = groseq_fisherexact_pausing_for_gene(ppc, pp_len, gbc, gb_len)
-                    # pvalue = 'NA'
-                    fisher_cache[fisher_key] = pvalue
-                    fisher_run_count += 1
-            else:
-                pvalue = 'NA'
-            pause_pvalue[fn_lb].append([pvalue, ppc, gbd])
-            fn_peak_rows[fn_lb][row_idx] = [row_str, transcript_id, pro_vs_pb]
-            
-            if n_loop % 10000 == 0:
-                now = time.time()
-                prev_time, prev_fisher_count = prev
-                time_gap = now - prev_time
-                speed_fisher = time_gap * 1000 / (fisher_run_count - prev_fisher_count)
-                logger.info(f'{n_loop/10000}w - Fisher count: {fisher_run_count/10000}w, time_gap={time_gap:.2}s, speed_fisher={speed_fisher:.3f}ms')
-                prev = [now, fisher_run_count]
-
-    return pp_str, gb_str, pause_pvalue, gbc_sum, fn_peak_rows
+    return pp_str, gb_str
 
 
 def main(args=None):
@@ -534,6 +498,8 @@ def main(args=None):
     if analysis.status:
         logger.error("Exit now")
         sys.exit(1)
+        
+    logger.info(f'skip_count_pp_gb = {analysis.skip_count_pp_gb}, skip_get_mapped_reads = {analysis.skip_get_mapped_reads}')
 
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
@@ -596,47 +562,48 @@ def main(args=None):
     if not analysis.skip_get_mapped_reads:
         logger.info(f'Getting pp_gb count')
         pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols)
-    else:
-        logger.debug('Re-use previous mapped reads count')
-        pp_str, gb_str = collect_previous_count(analysis, fls)
 
-    # close file handle
-    for fn_lb, fn_bed in fls:
-        analysis.out_fls['bed_peaks'][fn_lb]['fh'].close()
-    fh_fa.close()
-    
-
-    # calculate FDR
-    logger.info('Calculating FDR')
-    for fn_lb, fn_bed in fls:
-        fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
-        fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
-        header_fdr = analysis.out_fls['fdr'][fn_lb]['header']
-        get_FDR_per_sample(fn_peak, fn_fdr, header_fdr)
+        # close file handle
+        for fn_lb, fn_bed in fls:
+            analysis.out_fls['bed_peaks'][fn_lb]['fh'].close()
+        fh_fa.close()
+        
+        # calculate FDR
+        logger.info('Calculating FDR')
+        for fn_lb, fn_bed in fls:
+            fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
+            fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
+            header_fdr = analysis.out_fls['fdr'][fn_lb]['header']
+            get_FDR_per_sample(fn_peak, fn_fdr, header_fdr)
 
     
     # count_pp_gb
-    logger.info('Building count_pp_gb')
-    prefix = 'longeRNA-' if analysis.longerna else ''
-    fn_count_pp_gb = os.path.join(analysis.inter_dir, prefix + 'count_pp_gb.txt')
-    header = analysis.gene_cols + ['chr', 'start', 'end', 'strand']
-    header_pp = []
-    header_gb = []
-    for fn_lb, fn_bed in fls:
-        header_gb += [f'gbc_{fn_lb}', f'gbd_{fn_lb}']
-        header_pp.append(f'ppc_{fn_lb}')
-    header += header_pp + header_gb
-    
-    with open(fn_count_pp_gb, 'w') as o:
-        print('\t'.join(header), file=o)
-        for transcript_id in pp_str:
-            gene_info = gtf_info[transcript_id]
-            row = [transcript_id]
-            if not analysis.longerna:
-                row.append(gene_info['gene_name'])
-            row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
-            row += pp_str[transcript_id] + gb_str[transcript_id]
-            print('\t'.join(row), file=o)
+    fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    if not analysis.skip_count_pp_gb:
+        if analysis.skip_get_mapped_reads:
+            logger.debug('Re-use previous mapped reads count')
+            pp_str, gb_str = collect_previous_count(analysis, fls)
+        
+        logger.info('Building count_pp_gb')
+        prefix = 'longeRNA-' if analysis.longerna else ''
+        header = analysis.gene_cols + ['chr', 'start', 'end', 'strand']
+        header_pp = []
+        header_gb = []
+        for fn_lb, fn_bed in fls:
+            header_gb += [f'gbc_{fn_lb}', f'gbd_{fn_lb}']
+            header_pp.append(f'ppc_{fn_lb}')
+        header += header_pp + header_gb
+        
+        with open(fn_count_pp_gb, 'w') as o:
+            print('\t'.join(header), file=o)
+            for transcript_id in pp_str:
+                gene_info = gtf_info[transcript_id]
+                row = [transcript_id]
+                if not analysis.longerna:
+                    row.append(gene_info['gene_name'])
+                row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
+                row += pp_str[transcript_id] + gb_str[transcript_id]
+                print('\t'.join(row), file=o)
 
     tmp = json.dumps(time_cost, indent=3)
     print(tmp)

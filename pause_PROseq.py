@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#! /data/cqs/chenh19/project/nrsa_v2/miniconda3/bin/python3.12 
 """
 process PROseq data
 """

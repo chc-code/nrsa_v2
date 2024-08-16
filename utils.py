@@ -213,103 +213,6 @@ def get_seqence_from_fa(idx, fh, chr_, start, end):
     fh.seek(start_byte)
     return fh.read(len1 + lines_span).replace('\n', '').upper()
 
-def build_idx_for_bed_legacy(fn_bed, fn_idx, step=100):
-    """
-    built the index for the bed file, 
-    key1 = chr, key2 = position (by default, step size = 1000), value is the byte position in the bed file
-    the step size is used to reduce the number of lines to be read, so that the index file is smaller
-    for 2G bed files, the index file size is around 9M for chunksize= 1000, and around 50M for chunksize of 100
-    the overall run time will be reduced by 70% for chunksize = 100 compared to chunksize = 1000
-    stratify by strand, for plus strand, the end position is used to get the chunk number, however, because the end position is not sorted, so file byte position of a larger chunk number can be smaller than a smaller chunk number.
-    This will lead to problem, e.g. we searched for chunk100, and start from the file byte postion, and we expect we can find all the variants in chunk100 and chunk101 and after, but in fact, some reads in chunk101 or chunk102 can be before this file position.
-    The solution is, after building this index, we'll do adjustment to the plus strand index, and for a specific chunk, the byte position is set to be the minimum of the byte position of the chunk and the  chunks after
-    
-    2024-08-13
-    Since the get count step is most time consuming, so we try save the per site count to a dict, to test if the speed will be improved and the memory usage is acceptable
-    """
-    lb = get_lb(fn_bed)
-    res = {'step': step, 'fn_lb': lb}
-    chunks = 0
-        
-    with open(fn_bed) as f:
-        while True:
-            i = f.readline()
-            if not i:
-                break
-            line = i[:-1].split('\t')
-            try:
-                # 3 = id, 4 = score, 5 = strand
-                chr_, start, end, strand = line[0], line[1], line[2], line[5]
-                # chr_, start, strand = line[0], line[1], line[5]
-            except:
-                logger.error(f'{fn_bed}: invalid line format: {line}, position = {f.tell()}')
-                sys.exit(1)
-            ires = res.setdefault(chr_, {}).setdefault(strand, {})
-            read_end = int(start) + 1 if strand == '-' else int(end)
-            chunk = read_end // step   # the chunk number
-            # chunk = (int(start) + 1) // step
-            if chunk not in ires:
-                pos_line_end = f.tell()
-                # the above pos is the start of the next line, so need to get the position of the current line
-                pos_line_start = pos_line_end - len(i)
-                chunks += 1
-                ires[chunk] = pos_line_start
-    res['chunks'] = chunks
-    # update the chromosome name
-    res = {refine_chr(k): v for k, v in res.items()}
-
-    with open(fn_idx, 'wb') as o:
-        pickle.dump(res, o)
-    logger.info(f'Buildingn index done for {os.path.basename(fn_bed)}, chunks = {chunks}')
-    return res
-
-def build_idx_for_bed(fn_bed, fn_idx, step=100):
-    """
-    built the index for the bed file, 
-    key1 = chr, key2 = position (by default, step size = 1000), value is the byte position in the bed file
-    the step size is used to reduce the number of lines to be read, so that the index file is smaller
-    for 2G bed files, the index file size is around 9M for chunksize= 1000, and around 50M for chunksize of 100
-    the overall run time will be reduced by 70% for chunksize = 100 compared to chunksize = 1000
-    stratify by strand, for plus strand, the end position is used to get the chunk number, however, because the end position is not sorted, so file byte position of a larger chunk number can be smaller than a smaller chunk number.
-    This will lead to problem, e.g. we searched for chunk100, and start from the file byte postion, and we expect we can find all the variants in chunk100 and chunk101 and after, but in fact, some reads in chunk101 or chunk102 can be before this file position.
-    The solution is, after building this index, we'll do adjustment to the plus strand index, and for a specific chunk, the byte position is set to be the minimum of the byte position of the chunk and the  chunks after
-    
-    2024-08-13
-    Since the get count step is most time consuming, so we try save the per site count to a dict, to test if the speed will be improved and the memory usage is acceptable
-    """
-    lb = get_lb(fn_bed)
-
-    with open(fn_bed) as f:
-        while True:
-            i = f.readline()
-            if not i:
-                break
-            line = i[:-1].split('\t')
-            try:
-                # 3 = id, 4 = score, 5 = strand
-                chr_, start, end, strand = line[0], line[1], line[2], line[5]
-                # chr_, start, strand = line[0], line[1], line[5]
-            except:
-                logger.error(f'{fn_bed}: invalid line format: {line}, position = {f.tell()}')
-                sys.exit(1)
-            ires = res.setdefault(chr_, {}).setdefault(strand, {})
-            read_end = int(start) + 1 if strand == '-' else int(end)
-            chunk = read_end // step   # the chunk number
-            # chunk = (int(start) + 1) // step
-            if chunk not in ires:
-                pos_line_end = f.tell()
-                # the above pos is the start of the next line, so need to get the position of the current line
-                pos_line_start = pos_line_end - len(i)
-                chunks += 1
-                ires[chunk] = pos_line_start
-    res['chunks'] = chunks
-    # update the chromosome name
-    res = {refine_chr(k): v for k, v in res.items()}
-
-    with open(fn_idx, 'wb') as o:
-        pickle.dump(res, o)
-    logger.info(f'Buildingn index done for {os.path.basename(fn_bed)}, chunks = {chunks}')
-    return res
 
 def check_is_sorted(fn_bed):
     """
@@ -318,7 +221,7 @@ def check_is_sorted(fn_bed):
     chr_prev = None
     chr_set = set()
     logger.info(f'Checking if bed file is sorted: {fn_bed}')
-    with open(fn_bed) as f:
+    with gzip.open(fn_bed, 'rt') if fn_bed.endswith('.gz') else open(fn_bed) as f:
         last = 0
         for i in f:
             chr_, start = i.split('\t', 2)[:2]
@@ -590,8 +493,8 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
         idx_gene_cols = list(range(n_gene_cols))
         idx_list = []
         idx_list += idx_gene_cols
-        idx_list += [i for i, col in enumerate(header_in) if col[:4] == 'ppc_']
         idx_list += [i for i, col in enumerate(header_in) if col[:4] == 'ppd_']
+        idx_list += [i for i, col in enumerate(header_in) if col[:4] == 'gbd_']
         header_str = [header_in[i] for i in idx_list]
 
         for i in f:
@@ -611,8 +514,9 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
             return 1
         idx_list = [i for i, col in enumerate(header_in) if col.endswith('pindex')]
         header_str += [header_in[_] for _ in idx_list]
+        
         for i in f:
-            line = i.strip().split('\t')
+            line = i[:-1].split('\t')
             gn = line[0]
             if gn_list is None or gn in gn_list:
                 k = f'{gn}@{line[1]}'
@@ -620,7 +524,16 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
                     logger.warning(f'{gn} in pindex not found in pp_gb')
                     continue
                 ires = out_str[k]
-                ires += [line[_] for _ in idx_list]
+                try:
+                    vals_pindex = [line[_] for _ in idx_list]
+                except:
+                    logger.error(line)
+                    sys.exit(1)
+                if '' in vals_pindex:
+                    logger.error(line)
+                    sys.exit(1)
+                ires += vals_pindex
+                
 
     # write to file
     with open(fno, 'w') as o:
@@ -631,12 +544,10 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     # draw the box plot, adapted from boxplot.R
     # R CMD --args outdir=\"$inter_dir\" pname=\"$name\" custom=1 rep1=$rep1 rep2=$rep2
     df_box = pd.read_csv(fno, sep='\t')
-    headers = df_box.columns
-    sam_list = [name.split('ppc_')[1] for name in headers[n_gene_cols: n_gene_cols + n_total_sam]]
     cols_pp_density = [_ for _ in df_box.columns if _.startswith('ppd_')]
-    cols_gb_density = [_ for _ in df_box.columns if _.startswith('ppc_')]
+    cols_gb_density = [_ for _ in df_box.columns if _.startswith('gbd_')]
     cols_pindex = [_ for _ in df_box.columns if _.endswith('pindex')]
-    
+    sam_list = [name.split('ppd_')[1] for name in cols_pp_density]
     # logger.info(df_box.head())
     
     pp_density = df_box.loc[:, cols_pp_density]
@@ -689,22 +600,28 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     def plot_hist(n_sam, n_prev_col, ppd, gbd, condition_sn):
 
         plt.figure(figsize=(12, 6 * (n_sam - 1)))
-        for k in range(2, n_sam + 1):
-            
+        for k in range(1, n_sam):
+            col1 = n_prev_col
+            col2 = k + n_prev_col
+            col1_str = ppd.columns[col1]
+            col2_str = ppd.columns[col2]
             xlabel = f"log2({sam_list[0]}/{sam_list[k]})"
-            plt.subplot((n_sam - 1), 2, k - 1)
-            plt.hist(np.log2(ppd[:, n_prev_col] / ppd[:, k + n_prev_col]), bins=100)
-            plt.title(f"ppd: rep1vs.rep{k}")
+            plt.subplot((n_sam - 1), 2, k)
+            ppd_tmp = ppd.loc[(ppd.iloc[:, col1] > 0) & (ppd.iloc[:, col2] > 0), [col1_str, col2_str]]
+            plt.hist(np.log2(ppd_tmp.iloc[:, 0] / ppd_tmp.iloc[:, 1]), bins=100)
+            plt.title(f"ppd: rep1vs.rep{k + 1}")
             plt.xlabel(xlabel)
 
-            plt.subplot((n_sam - 1), 2, k)
-            plt.hist(np.log2(gbd[:, n_prev_col] / gbd[:, k + n_prev_col]), bins=100)
-            plt.title(f"gbd: rep1vs.rep{k}")
+            plt.subplot((n_sam - 1), 2, k + 1)
+            gbd_tmp = gbd.loc[(gbd.iloc[:, col1] > 0) & (gbd.iloc[:, col2] > 0), [col1_str, col2_str]]
+            plt.hist(np.log2(gbd_tmp.iloc[:, 0] / gbd_tmp.iloc[:, 1]), bins=100)
+
+            plt.title(f"gbd: rep1vs.rep{k + 1}")
             plt.xlabel(xlabel)
 
         plt.savefig(f"{pw_out}/known_gene/Reps-condition{condition_sn}.tif")
         plt.close()
-
+    
     if n_rep1 > 1:
         plot_hist(n_rep1, 0, pp_density, gb_density, 1)
     if n_rep2 > 1:
@@ -716,6 +633,7 @@ def draw_heatmap_pindex(n_gene_cols, pw_out):
     plot for the pindex change
     """
     from matplotlib import pyplot as plt
+    import matplotlib.colors as mcolors
     
     fn_pindex_change = f'{pw_out}/known_gene/pindex_change.txt'
     if not os.path.exists(fn_pindex_change):
@@ -747,7 +665,7 @@ def draw_heatmap_pindex(n_gene_cols, pw_out):
     cbar.set_ticks([0, 0.5, 1])
     cbar.set_ticklabels([color_min, 0, color_max])
 
-    img = ax.imshow(x.iloc[:, 2].values.reshape(-1, 1), cmap=my_palette, aspect='auto')
+    img = ax.imshow(data_plot.iloc[:, 2].values.reshape(-1, 1), cmap=my_palette, aspect='auto')
 
     plt.savefig(f'{pw_out}/known_gene/pindex_change.pdf', bbox_inches='tight')
     plt.close()
@@ -942,17 +860,20 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
     return fisher.pvalue(c1, c2, c3, c4).two_tail
 
 
-def get_FDR_per_sample(fn_peak, fn_fdr, pause_index_str):
+def get_FDR_per_sample(fn_lb, fn_peak, fn_fdr, pause_index_str):
     """
     get the pvalue and FDR based on the peak file, retain only 1 transcript per gene, (keep the transcript with the highest pp count)
     """
     logger.debug('loading raw peak table')
-    df_peak = pd.read_csv(fn_peak, sep='\t')
-    # collapse genes
+    # df_peak = pd.read_csv(fn_peak, sep='\t')
+    df_peak_gene = pd.read_csv(fn_peak, sep='\t')
+    
+    # below code is for collapse genes
+    # but actually, do not collapse them. this will lead to lots of problems for combining FDR files from different samples. e.g. building the pindex.txt
     # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
     # NM_000014.5	A2M	40	50	0.8	12-:0	43	47522	0.0009	884.13023
-    idx = df_peak.groupby('Gene')['ppc'].idxmax()
-    df_peak_gene = df_peak.loc[idx]
+    # idx = df_peak.groupby('Gene')['ppc'].idxmax()
+    # df_peak_gene = df_peak.loc[idx]
     logger.debug('get pvalue by fisher exact test')
     df_peak_gene['pvalue'] = df_peak_gene.apply(lambda x: groseq_fisherexact_pausing_for_gene(x['ppc'], x['ppm'], x['gbc'], x['gbm']), axis=1)
     
@@ -968,7 +889,7 @@ def get_FDR_per_sample(fn_peak, fn_fdr, pause_index_str):
     df_tmp= df_peak_gene[[col_ts, 'pauseIndex', 'pvalue', 'FDR']].fillna('NA').astype(str)
     for row in df_tmp.itertuples(index=False, name=None):
         ts, *values = row
-        pause_index_str.setdefault(ts, []).extend(values)
+        pause_index_str.setdefault(ts, {})[fn_lb] = values
     return pause_index_str
 
 
@@ -1036,7 +957,7 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # if each group only have one sample
     n_sam = counttable.shape[0]
     if n_sam == 2:
-        log2fc = np.log2(data.iloc[:, n_gene_cols + 1] / size_factors[1]) / (data.iloc[:, n_gene_cols] / size_factor[0])
+        log2fc = np.log2(data.iloc[:, n_gene_cols + 1] / size_factors[1]) / (data.iloc[:, n_gene_cols] / size_factors[0])
         res_df = data.iloc[:, idx_gene_cols]
         res_df['log2fc'] = log2fc
         return res_df, size_factors
@@ -1044,9 +965,14 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     if size_factors_in is None:  # gb change
         dds.deseq2()
     else:
+        # logger.debug(f'custom size factor specified: {size_factors_in}')
         counts = dds.X
         (dds.logmeans, dds.filtered_genes) = deseq2_norm_fit(counts)
         dds.layers["normed_counts"] = counts / size_factors[:, None]
+        
+        # added below for 0.4.10 version of pydeseq2
+        dds.varm["_normed_means"] = dds.layers["normed_counts"].mean(0)
+
 
         dds.fit_genewise_dispersions()
         dds.fit_dispersion_trend()
@@ -1186,7 +1112,17 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
             res_df_full.to_csv(f'{out_dir}/known_gene/gb_change.txt', sep='\t', index=False)
             
             # pp change
-            res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
+            try:
+                res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
+            except:
+                fn_deseq2_input = '/data/cqs/chenh19/project/nrsa_v2/test/G401_584_vs_G401_DMSO/intermediate/bed/deseq2.pkl'
+                
+                logger.error(f'fail to run deseq2, dumping the arguments to {fn_deseq2_input}')
+                with open(fn_deseq2_input, 'wb') as o:
+                    pickle.dump([n_gene_cols, data_pass_pp, metadata, ref_level, size_factors], o)
+                
+                sys.exit(1)
+                
             res_df_full = pd.concat([res_df, data_drop_pp.iloc[:, idx_gene_cols]])
             res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False)
     elif rep1 == 1:
@@ -1195,7 +1131,6 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     elif rep2 == 0:
         # control only, multiple ctrol samples
         _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True)
-    logger.debug(f'size_factors = {size_factors}')
 
     norm_factors = size_factors / 1
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
@@ -1349,7 +1284,8 @@ def cmhtest(row, rep1, rep2):
             gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
             # below is the gb2 defined in R code, which is wrong, here just used to test the consistency
             # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
-            arr.append([[pp2, gb2], [pp1, gb1]])
+            if pp1 + pp2 + gb1 + gb2 > 0:
+                arr.append([[pp2, gb2], [pp1, gb1]])
     arr = np.array(arr).T
     cmt = contingency_tables.StratifiedTable(tables=arr)
     odds_ratio = cmt.oddsratio_pooled
@@ -1358,7 +1294,7 @@ def cmhtest(row, rep1, rep2):
     # statistic = test_res.statistic
     # print(f'odds_ratio = {odds_ratio}, pvalue = {pvalue}, statistic = {statistic}') 
     # return log2(odd_ratio), pvalue
-    return np.log2(odds_ratio), pvalue
+    return np.log2(odds_ratio) if odds_ratio != 0 else 'NA', pvalue
 
 
 def get_pvalue_2_sample(row, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc2):
@@ -1432,9 +1368,11 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
 
     # run the cmhtest, the data should have 3 dimensions
     else:
+        # logger.info(data_pass.columns)
+        # logger.info(data_pass.head().values)
         # cmhtest(row, rep1, rep2)  # return = log2(odds_ratio), pvalue
-        data_out = data_pass.iloc[:, idx_gene_cols]
-        data_out[['log2fc', 'pvalue']] = data_pass.apply(lambda x: cmhtest(x, rep1, rep2), axis=1, result_type='expand')
+        data_out = data_pass.iloc[:, idx_gene_cols].copy()
+        data_out[['log2fc', 'pvalue']] = data_pass.iloc[:, n_gene_cols:].apply(lambda x: cmhtest(list(x), rep1, rep2), axis=1, result_type='expand')
         data_out = add_FDR_col(data_out, 'pvalue')
     
     data_out = data_out.sort_values('FDR')
@@ -1460,7 +1398,42 @@ def change_enhancer(fn, out_dir, condition, rep1, rep2, factor1=None, factor2=No
     if condition == 1:
         pass
     
+def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
+    strand = gene_info['strand']
+    gene_raw_s, gene_raw_e = gene_info['start'], gene_info['end']
+    if strand == '+':
+        pp_start = gene_raw_s - pro_up
+        pp_end = gene_raw_s + pro_down - 1
+        gb_start = gene_raw_s + gb_down_distance
+        gb_end = gene_raw_e
+        strand_idx = 0
+    else:
+        pp_start = gene_raw_e - (pro_down - 1)
+        pp_end = gene_raw_e + pro_up
+        gb_start = gene_raw_s
+        gb_end = gene_raw_e - gb_down_distance
+        strand_idx = 1
+    
+    # modify here
+    # skip the get gene_seq step
+    gene_seq = None
+    gb_seq_N = 0
 
+    # gene_seq = get_seqence_from_fa(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e)# already upper case
+    # if gene_seq.count('N') == 0:
+    #     gene_seq = None  # no need to check the mappable sites
+    #     gb_seq_N = 0
+    # else:
+    #     gb_seq_N = gene_seq[gb_start - gene_raw_s: gb_end - gene_raw_s + 1].count('N')
+    
+    gb_len_mappable = gb_end - gb_start + 1 - gb_seq_N
+
+    new_info = dict(zip(
+        ['pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq'], 
+        [ pp_start,   pp_end,   gb_start ,  gb_end ,  strand_idx ,  gb_len_mappable,   gene_seq ]
+        ))
+    gene_info.update(new_info)
+    return gene_info
 
 def process_gtf(fn_gtf):
     """
@@ -1659,8 +1632,8 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
 
     count_bin = {'bin_size': bin_size}
     count_per_base = {}
-
-    with open(fn_out_bed, 'w') as fh_bed:
+    logger.info(f'Pre-counting for {fn_lb}')
+    with gzip.open(fn_out_bed, 'rt') if fn_out_bed.endswith('.gz') else open(fn_out_bed, 'r') as fh_bed:
         for i in fh_bed:
             # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
             chr_, s, e, _, _, strand = i[:-1].split('\t')
@@ -1671,20 +1644,21 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
             count_bin[chr_][chunk][strand_idx] += 1
 
             count_per_base.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
-            res_bed[chr_][read_end][strand_idx] += 1
+            count_per_base[chr_][read_end][strand_idx] += 1
 
         # refine the chr_
         count_per_base = {refine_chr(k): v for k, v in count_per_base.items()}
         count_bin = {refine_chr(k): v for k, v in count_bin.items()}
-
+    logger.info('done.')
     # dump the pickle
     with open(fn_count_per_base, 'wb') as f:
         pickle.dump(count_per_base, f)
     with open(fn_count_bin, 'wb') as f:
         pickle.dump(count_bin, f)
+    logger.debug('dump to pickle done.')
     return count_per_base, count_bin
 
-def build_bin_dict(pw_out, fn_lb, bin_size):
+def build_bin_dict(bin10, pw_out, fn_lb, bin_size):
    # based on the result of bin=10, build bin = 50, 100 dict
     res = {'bin_size': bin_size}
     for chr_, v1 in bin10.items():
@@ -1713,27 +1687,42 @@ def process_input(pwout, fls):
     lb_map = {}
     for fn in fls:
         fn_lb = get_lb(fn)
-        fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
+        gz_suffix = '.gz' if fn.endswith('.gz') else ''
         fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
-        ires = [fn_lb, fn_out_bed]
+        fn_out_bed_gz = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed{gz_suffix}'
+
         if os.path.exists(fn_out_bed) and os.path.getsize(fn_out_bed) > 10:
-            res.append(ires)
+            res.append([fn_lb, fn_out_bed])
             continue
-        if fn.endswith('.bam'):
+        elif gz_suffix and os.path.exists(fn_out_bed_gz) and os.path.getsize(fn_out_bed_gz) > 10:
+            res.append([fn_lb, fn_out_bed_gz])
+            continue
+        
+        fn_for_check = re.sub(r'\.gz$', '', fn)
+        if fn_for_check.endswith('.bam'):
             logger.info(f'Converting {fn}')
             # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
             # bedtools sort is faster than linux sort
             cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
             os.system(cmd)
-        elif fn.endswith('.bed'):
+            ires = [fn_lb, fn_out_bed]
+        elif fn_for_check.endswith('.bed'):
             # check if sorted
-            is_sorted = check_is_sorted(fn)
+            if 'sorted' in fn:
+                is_sorted = 1
+            else:
+                is_sorted = check_is_sorted(fn)
+                
             if is_sorted:
-                os.system(f'ln -sf {fn} {fn_out_bed} 2>/dev/null')
+                fn_abs = os.path.realpath(fn)
+                os.system(f'ln -sf {fn_abs} {fn_out_bed_gz}')
+                ires = [fn_lb, fn_out_bed_gz]
             else:
                 logger.warning(f'input bed is not sorted, now sorting...')
+                # bedtools can handle gzip format
                 cmd = f'bedtools sort -i {fn} > {fn_out_bed}'
                 os.system(cmd)
+                ires = [fn_lb, fn_out_bed]
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
             err = 1

@@ -13,8 +13,9 @@ from subprocess import Popen, PIPE
 import pandas as pd
 import numpy as np
 import fisher
-import bisect
+# import bisect
 from statsmodels.stats.multitest import multipletests
+import statsmodels.stats.contingency_tables as contingency_tables
 pw_code = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -432,7 +433,7 @@ def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp
     else:
         gbd = gbc / gb_len_mappable
     # gbc = gbd = 0
-    k_pp_region = f'{chr_}{strand}:{pp_start}'
+    # k_pp_region = f'{chr_}{strand}:{pp_start}'
     
     
     # get all the sites count in pp region
@@ -453,7 +454,7 @@ def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp
     else:
         ppd = ppc / window_size
 
-    pp_res = {'ppc': ppc, 'ppd': ppd, 'mappable_sites': window_size, 'summit_pos': summit_pos, 'summit_count': summit_count}
+    pp_res = {'ppc': ppc, 'ppd': ppd, 'mappable_sites': window_size, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
     # prev_pp_peak[k_pp_region] = pp_res
     # gbc = gbd = 0
     # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
@@ -609,7 +610,7 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
             logger.error(f'invalid header in {fn_pindex}')
             return 1
         idx_list = [i for i, col in enumerate(header_in) if col.endswith('pindex')]
-        header_str += [header_in[i] for i in idx_list]
+        header_str += [header_in[_] for _ in idx_list]
         for i in f:
             line = i.strip().split('\t')
             gn = line[0]
@@ -619,7 +620,7 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
                     logger.warning(f'{gn} in pindex not found in pp_gb')
                     continue
                 ires = out_str[k]
-                ires += [line[i] for i in idx_list]
+                ires += [line[_] for _ in idx_list]
 
     # write to file
     with open(fno, 'w') as o:
@@ -636,9 +637,13 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     cols_gb_density = [_ for _ in df_box.columns if _.startswith('ppc_')]
     cols_pindex = [_ for _ in df_box.columns if _.endswith('pindex')]
     
-    pp_density = df_box.iloc[:, cols_pp_density]
-    gb_density = df_box.iloc[:, cols_gb_density]
-    pindex =     df_box.iloc[:, cols_pindex]
+    # logger.info(df_box.head())
+    
+    pp_density = df_box.loc[:, cols_pp_density]
+    gb_density = df_box.loc[:, cols_gb_density]
+    pindex =     df_box.loc[:, cols_pindex]
+    
+    # logger.info(pindex.head(20))
 
     pp_density.columns = sam_list
     gb_density.columns = sam_list
@@ -649,28 +654,36 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     fn_plot_gb = f'{pw_out}/known_gene/{out_name}_gb_density.pdf'
     fn_plot_pindex = f'{pw_out}/known_gene/{out_name}_pausing_index.pdf'
     
-    def plot_task(fn, ylabel, data):
+    def plot_task(fn, ylabel, data, factor=1):
         with PdfPages(fn) as pdf:
             plt.figure(figsize=(2, 4))
             
             # Split the data into two groups based on n_rep1
             data_rep1 = data.iloc[:, :n_rep1]
-            data_rep2 = data.iloc[:, n_rep1:]
+            data_rep1 = [data_rep1[_].dropna() * factor for _ in data_rep1]
+            
+            if n_rep2:
+                data_rep2 = data.iloc[:, n_rep1:]
+                data_rep2 = [data_rep2[_].dropna() * factor for _ in data_rep2]
+            
+            # previously, data_rep1 and data_rep2 were all x 1000 as the input of box plot data
             
             # Plot the boxplot for the first n_rep1 samples (blue color)
-            plt.boxplot(data_rep1 * 1000, positions=range(1, n_rep1 + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='blue'), capprops=dict(color='blue'), whiskerprops=dict(color='blue'), medianprops=dict(color='blue'))
+            # plt.boxplot(data_rep1 * 1000, positions=range(1, n_rep1 + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='blue'), capprops=dict(color='blue'), whiskerprops=dict(color='blue'), medianprops=dict(color='blue'))
+            plt.boxplot(data_rep1, positions=range(1, n_rep1 + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='blue'), capprops=dict(color='blue'), whiskerprops=dict(color='blue'), medianprops=dict(color='blue'))
             
             # Plot the boxplot for the rest of the samples (red color)
             if n_rep2:
-                plt.boxplot(data_rep2 * 1000, positions=range(n_rep1 + 1, n_total_sam + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='red'), capprops=dict(color='red'), whiskerprops=dict(color='red'), medianprops=dict(color='red'))
+                # plt.boxplot(data_rep2 * 1000, positions=range(n_rep1 + 1, n_total_sam + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='red'), capprops=dict(color='red'), whiskerprops=dict(color='red'), medianprops=dict(color='red'))
+                plt.boxplot(data_rep2, positions=range(n_rep1 + 1, n_total_sam + 1), showfliers=False, patch_artist=True, boxprops=dict(facecolor='red'), capprops=dict(color='red'), whiskerprops=dict(color='red'), medianprops=dict(color='red'))
             
             plt.ylabel(ylabel)
             plt.xticks(range(1, n_total_sam + 1), sam_list, rotation='vertical')
             plt.tight_layout()
             pdf.savefig()
             
-    plot_task(fn_plot_pp, 'Reads per Kb (RPK)', pp_density)
-    plot_task(fn_plot_gb, 'Reads per Kb (RPK)', gb_density)
+    plot_task(fn_plot_pp, 'Reads per Kb (RPK)', pp_density, 1000)
+    plot_task(fn_plot_gb, 'Reads per Kb (RPK)', gb_density, 1000)
     plot_task(fn_plot_pindex, 'Pausing Index', pindex)
 
     def plot_hist(n_sam, n_prev_col, ppd, gbd, condition_sn):
@@ -928,48 +941,35 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
     # default = two-sided
     return fisher.pvalue(c1, c2, c3, c4).two_tail
 
-def calc_FDR(pvalues, with_na=True):
-    """
-    Calculate the false discovery rate (FDR) using the Benjamini-Hochberg method
-    with_na, will first filter out the invalid pvalues, and then map the pvalues back to the original index
-    """
-    
-    
-    if not with_na:
-        return multipletests(pvalues, method='fdr_bh')[1]
-    
-    pvalues_valid = []
-    idx_map = {}
-    idx_valid_p = -1
-    for idx_old, p in enumerate(pvalues):
-        if p is None or isinstance(p, str) or np.isnan(p):
-            continue
-        idx_valid_p += 1
-        pvalues_valid.append(p)
-        idx_map[idx_old] = idx_valid_p
-    
-    fdr = multipletests(pvalues_valid, method='fdr_bh')[1]  # return is a tuple, (reject, corrected p-values, alphaSidak, alphaBonf )
-    fdr_all = ['NA' if idx not in idx_map else fdr[idx_map[idx]] for idx in range(len(pvalues))]
-    return fdr_all
 
-
-def get_FDR_per_sample(fn_peak, fn_fdr, header_fdr):
+def get_FDR_per_sample(fn_peak, fn_fdr, pause_index_str):
     """
     get the pvalue and FDR based on the peak file, retain only 1 transcript per gene, (keep the transcript with the highest pp count)
     """
+    logger.debug('loading raw peak table')
     df_peak = pd.read_csv(fn_peak, sep='\t')
     # collapse genes
     # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
     # NM_000014.5	A2M	40	50	0.8	12-:0	43	47522	0.0009	884.13023
     idx = df_peak.groupby('Gene')['ppc'].idxmax()
     df_peak_gene = df_peak.loc[idx]
+    logger.debug('get pvalue by fisher exact test')
     df_peak_gene['pvalue'] = df_peak_gene.apply(lambda x: groseq_fisherexact_pausing_for_gene(x['ppc'], x['ppm'], x['gbc'], x['gbm']), axis=1)
     
     pvals = df_peak_gene['pvalue'].dropna()
+    logger.debug('get FDR')
     fdr = multipletests(pvals, method='fdr_bh')[1]
     df_peak_gene.loc[pvals.index, 'FDR'] = fdr
-    df_peak_gene.to_csv(fn_fdr, sep='\t', index=False)
-
+    logger.debug(f'dump to file {fn_fdr}')
+    df_peak_gene.to_csv(fn_fdr, sep='\t', index=False, na_rep='NA')
+    
+    logger.debug('building pause_index_str')
+    col_ts = df_peak_gene.columns[0]
+    df_tmp= df_peak_gene[[col_ts, 'pauseIndex', 'pvalue', 'FDR']].fillna('NA').astype(str)
+    for row in df_tmp.itertuples(index=False, name=None):
+        ts, *values = row
+        pause_index_str.setdefault(ts, []).extend(values)
+    return pause_index_str
 
 
 def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads=10, filter_out_low_expression=False, 
@@ -1103,12 +1103,13 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     idx_gbc_combined = col_idx['gbc']['combined']
     idx_gbd_combined = col_idx['gbd']['combined']
     idx_gene_cols = list(range(n_gene_cols))
-    
+
+    sam_list = [re.sub('^ppc_', '', _) for _ in data.columns[idx_ppc_combined]]
     
     if skip_filtering:
         data_pass = data
         data_drop = pd.DataFrame()
-        return col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
+        return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
     
     tmp1 = sum([1 if cols_raw[i].startswith('gbc_') else 0 for i in idx_gbc_combined])
     tmp2 = sum([1 if cols_raw[i].startswith('gbd_') else 0 for i in idx_gbd_combined])
@@ -1117,7 +1118,6 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
         sys.exit(1)
         return None
     
-    sam_list = [re.sub('^ppc_', '', _) for _ in data.columns[idx_ppc_combined]]
     
     data['tmp_ppc_pass'] = data.iloc[:, idx_ppc_combined].apply(lambda x: all(x > 0), axis=1)
     
@@ -1148,14 +1148,14 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     
     n_sam = rep1 + rep2
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2)
-
+    
     data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False)
     
-    data_pass_pp = data_pass.iloc[:, idx_gene_cols + [idx_ppc_combined]] # datapp in R
-    data_drop_pp = data_drop.iloc[:, idx_gene_cols + [idx_ppc_combined]] # data_pp in R
+    data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R
+    data_drop_pp = data_drop.iloc[:, idx_gene_cols + idx_ppc_combined] # data_pp in R
     
-    data_pass_gb = data_pass.iloc[:, idx_gene_cols + [idx_gbc_combined]] # datagb in R
-    data_drop_gb = data_drop.iloc[:, idx_gene_cols + [idx_gbc_combined]] # data_gb in R
+    data_pass_gb = data_pass.iloc[:, idx_gene_cols + idx_gbc_combined] # datagb in R
+    data_drop_gb = data_drop.iloc[:, idx_gene_cols + idx_gbc_combined] # data_gb in R
     
     if rep2 == 0:
         # case only, the meta data is just the dummy value, won't be used for deseq, just for get the sizefactors
@@ -1179,6 +1179,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     
     if rep2 > 0:
         # gb change
+        logger.info('running DESeq2')
         with HiddenPrints():
             res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
             res_df_full = pd.concat([res_df, data_drop_gb.iloc[:, idx_gene_cols]])
@@ -1189,17 +1190,19 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
             res_df_full = pd.concat([res_df, data_drop_pp.iloc[:, idx_gene_cols]])
             res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False)
     elif rep1 == 1:
+        logger.debug('single contrl sample only')
         size_factors = 1 # size factor is 1 for the only sample
     elif rep2 == 0:
-        # control only
+        # control only, multiple ctrol samples
         _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True)
+    logger.debug(f'size_factors = {size_factors}')
 
+    norm_factors = size_factors / 1
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
     nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
     nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False)
-
-    return size_factors
+    return size_factors, sam_list
     
 
 def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
@@ -1280,6 +1283,8 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
         err = 1
     if err:
         return 1
+    fn_norm = f'{out_dir}/known_gene/normalized_pp_gb.txt'
+
     
     data_raw = pd.read_csv(fn, sep='\t')
     data = data_raw.copy()
@@ -1311,12 +1316,12 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     n_sam = rep1 + rep2
     
     # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-    size_factors = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
+    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
 
     # get the normalized data
     n_extra_cols = 4 # chr, start, end, strand
     n_prev_cols = n_gene_cols + n_extra_cols
-    idx_cols, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
     
     norm_factors = 1 / size_factors
     ppc_norm = data_raw.iloc[:, idx_ppc_combined] * norm_factors
@@ -1326,7 +1331,7 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     gbc_norm = data_raw.iloc[:, idx_gbc_combined] * norm_factors
     gbd_norm = data_raw.iloc[:, idx_gbd_combined] * norm_factors
     data_normalized = pd.concat([data_raw.iloc[:, :n_prev_cols], ppc_norm, ppd_norm, gbc_norm, gbd_norm], axis=1)
-    data_normalized.to_csv(f'{out_dir}/known_gene/normalized_pp_gb.txt', sep='\t', index=False)
+    data_normalized.to_csv(fn_norm, sep='\t', index=False)
 
 
 def cmhtest(row, rep1, rep2):
@@ -1334,7 +1339,6 @@ def cmhtest(row, rep1, rep2):
     performs the Mantel-Haenszel test on a certain gene
     the row is like ppc_sam1, ppc_sam2, ppc_sam3, ppc_sam4, gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2, ...
     """
-    import statsmodels as sm
     arr = []
     n_sam = rep1 + rep2
     for i in range(rep1):
@@ -1347,11 +1351,11 @@ def cmhtest(row, rep1, rep2):
             # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
             arr.append([[pp2, gb2], [pp1, gb1]])
     arr = np.array(arr).T
-    cmt = sm.stats.contingency_tables.StratifiedTable(tables=arr)
+    cmt = contingency_tables.StratifiedTable(tables=arr)
     odds_ratio = cmt.oddsratio_pooled
     test_res = cmt.test_null_odds(correction=True)
     pvalue = test_res.pvalue
-    statistic = test_res.statistic
+    # statistic = test_res.statistic
     # print(f'odds_ratio = {odds_ratio}, pvalue = {pvalue}, statistic = {statistic}') 
     # return log2(odd_ratio), pvalue
     return np.log2(odds_ratio), pvalue
@@ -1370,7 +1374,14 @@ def get_pvalue_2_sample(row, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc2):
     if pvalue is None:
         return 'NA'
     return pvalue
-     
+
+def add_FDR_col(df, col_pvalue, col_FDR='FDR'):
+    pvals = df[col_pvalue].dropna()
+    fdr = multipletests(pvals, method='fdr_bh')[1]
+    df.loc[pvals.index, 'FDR'] = fdr
+    return df
+
+
 def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
     """
     fno_prefix, default is empty for known genes, longeRNA- for longeRNA
@@ -1383,7 +1394,9 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
     if fno_prefix not in ['', 'longeRNA-']:
         logger.error(f'invalid file prefix for pindex_change, should be empty or "longeRNA-", input="{fno_prefix}"')
         return 1
-    
+    if not rep2:
+        logger.warning(f'Only control samples were specified, skip performing change_pindex...')
+        return 
     is_erna = True if fno_prefix == 'longeRNA-' else False
     data = pd.read_csv(fn, sep='\t')
     n_sam = rep1 + rep2
@@ -1397,7 +1410,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         cols_keep = list(range(n_gene_cols)) + list(range(n_cols_prev, len(data.columns))) # drop the chr, start, end, strand columns
         data = data.iloc[:, cols_keep]
 
-    col_idx, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
     
     if n_sam == 2:
         # use fisher exact test
@@ -1405,23 +1418,24 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         idx_ppc2 = col_idx['ppc']['cond2']
         idx_gbc1 = col_idx['gbc']['cond1']
         idx_gbd1 = col_idx['gbd']['cond1']
-        pvalues = data_pass.apply(lambda x: get_pvalue_2_sample(x, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbd1), axis=1)
-        fdr = calc_FDR(pvalues)
+        idx_gbc2 = col_idx['gbc']['cond2']
+        idx_gbd2 = col_idx['gbd']['cond2']
+        
+        data_out['pvalue'] = data_pass.apply(lambda x: get_pvalue_2_sample(x, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbd1), axis=1)
+        data_out = add_FDR_col(data_out, 'pvalue')
+        
         # odds_ratio = (ppc2/ppc1) / (gbc2/gbc1) = ppc2 * gbc1 / (ppc1 * gbc2)
         log2fc = data_pass.apply(lambda x: np.log2(x[idx_ppc2] * x[idx_gbc1] / (x[idx_ppc1] * x[idx_gbc2])), axis=1)
-        
         data_out = data_pass.iloc[:, idx_gene_cols]
         
         data_out['log2fc'] = log2fc
-        data_out['pvalue'] = pvalues
-        data_out['FDR'] = fdr
 
     # run the cmhtest, the data should have 3 dimensions
     else:
         # cmhtest(row, rep1, rep2)  # return = log2(odds_ratio), pvalue
         data_out = data_pass.iloc[:, idx_gene_cols]
         data_out[['log2fc', 'pvalue']] = data_pass.apply(lambda x: cmhtest(x, rep1, rep2), axis=1, result_type='expand')
-        data_out['FDR'] = calc_FDR(data_out['pvalue'])
+        data_out = add_FDR_col(data_out, 'pvalue')
     
     data_out = data_out.sort_values('FDR')
     data_out_full = pd.concat([data_out, data_drop.iloc[:, idx_gene_cols]]).fillna('NA')

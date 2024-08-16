@@ -8,11 +8,11 @@ import sys, os, re
 import pickle
 import json
 from types import SimpleNamespace
-from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  groseq_fisherexact_pausing_for_gene, change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, calc_FDR, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed
+from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed
 
 sys.dont_write_bytecode = True
 
-time_cost = {'reused': {'pp_region': 0, 'window': 0}}
+time_cost = {}
 now = time.time()
 
 s = now
@@ -121,21 +121,6 @@ def getargs():
     
     return args
 
-
-def seek(pos, padding=1000):
-    
-    query_region_size = 2000
-    print('regions before:')
-    f.seek(pos - padding)
-    print(f.read(padding))
-    
-    print('\n\nqueried region')
-    f.seek(pos)
-    print(f.read(query_region_size))
-    
-    print('\n\nregions after:')
-    f.seek(pos + query_region_size)
-    print(f.read(padding))
 
 
 class Analysis:
@@ -293,14 +278,14 @@ def bench(s, lb):
     return now
 
 
-def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols):
+def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa):
     invalid_chr_transcript = 0
     bin_size = analysis.bin_size
     # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
     fail_to_retrieve_seq = 0
     pwout = analysis.out_dir
     window_size, step_size = analysis.config['window_size'], analysis.config['step']
-
+    dummy_seq = 'ATCG'
     n = 0
     prev = [time.time(), 0] # time, get_mapped_reads_count count
     section_size = 1000 # print log every 1000 loops
@@ -316,13 +301,14 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols):
     seq_pool = {} # key = transcript_id
     count_pool = {}
     prev_peak_pool = {}
+    genes_with_N = set()
     for transcript_id in ts_list:
         # continue
         gene_info = gtf_info[transcript_id]
         # gene_info: {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
         chr_ = gene_info['chr']
         strand = gene_info['strand']
-        gene_name = gene_info['gene_name']
+        # gene_name = gene_info['gene_name']
         gene_raw_s, gene_raw_e = gene_info['start'], gene_info['end']
         if strand == '+':
             pp_start = gene_raw_s - analysis.config['pro_up']
@@ -337,21 +323,28 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols):
             gb_end = gene_raw_e - analysis.config['gb_start']
             strand_idx = 1
         s = time.time()
-        gene_seq = seq_pool.setdefault(transcript_id, get_seqence_from_fa(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e))# already upper case
-        # gene_seq = dummy(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e)
-        # gene_seq = 'ATCG'
-        s = bench(s, 'get_seq')
         
-        if gene_seq == 1:
-            fail_to_retrieve_seq += 1
-            del gtf_inf[transcript_id]
-            continue
-        # invalid_bases_set = {idx + gene_raw_s for idx, base in enumerate(gene_seq) if base not in valid_bases}
-        if gene_seq.count('N') == 0:
-            gene_seq = None  # no need to check the mappable sites
-            gb_seq_N = 0
-        else:
-            gb_seq_N = gene_seq[gb_start - gene_raw_s: gb_end - gene_raw_s + 1].count('N')
+        # modify here
+        # skip the get gene_seq step
+        
+        # gene_seq = seq_pool.setdefault(transcript_id, get_seqence_from_fa(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e))# already upper case
+        # gene_seq = dummy(fa_idx, fh_fa, chr_, gene_raw_s, gene_raw_e)
+        gene_seq = None
+        gb_seq_N = 0
+        
+        
+        # s = bench(s, 'get_seq')
+        
+        # if gene_seq == 1:
+        #     fail_to_retrieve_seq += 1
+        #     del gtf_info[transcript_id]
+        #     continue
+        # # invalid_bases_set = {idx + gene_raw_s for idx, base in enumerate(gene_seq) if base not in valid_bases}
+        # if gene_seq.count('N') == 0:
+        #     gene_seq = None  # no need to check the mappable sites
+        #     gb_seq_N = 0
+        # else:
+        #     gb_seq_N = gene_seq[gb_start - gene_raw_s: gb_end - gene_raw_s + 1].count('N')
         
         gb_len_mappable = gb_end - gb_start + 1 - gb_seq_N
         s = bench(s, 'check_N')
@@ -401,7 +394,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols):
             row = [transcript_id]
             if not analysis.longerna:
                 row.append(gene_info['gene_name'])
-            row += [pp_res['ppc'], pp_res['mappable_sites'], pp_res['ppd'], pp_res['summit_pos'], gbc, gbd]
+            row += [pp_res['ppc'], pp_res['mappable_sites'], pp_res['ppd'], pp_res['summit_pos'], gbc, gb_len_mappable, gbd]
             pro_vs_pb = round(pp_res['ppd'] / gbd, 4) if gbd else 'NA'
             row.append(pro_vs_pb)
             s = bench(s, 'prepare row')
@@ -427,15 +420,13 @@ def collect_previous_count(analysis, fls):
     pp_str = {} # key = transcript_id, v = the peak count in promoter region for each file. 
     gb_str = {} # key = transcript_id, v = [the peak count in gene body region, ratio] for each file.
 
-    prev = [time.time(), 0]  # the timestamp and the fisher count of prev logging
-    for fn_lb, fn_bed_count in fls:
+    for fn_lb, _ in fls:
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
         # Transcript	Gene	ppc	ppm	ppd	pps	gbc	gbm	gbd	pauseIndex
         fh_bed_peaks.seek(0)
         header = fh_bed_peaks.readline()[:-1].split('\t') # header
         idx_ppc = header.index('ppc')
         for line in fh_bed_peaks:
-            row_str = line.strip()
             row = line.strip().split('\t')
             transcript_id = row[0]
             ppc, gbc, gbd = [row[_ + idx_ppc] for _ in [0, 4, 6]]
@@ -485,14 +476,12 @@ def main(args=None):
                 setattr(args, attr, default)
         
     benchmode = args.bench
-    
     # check dependencies
     dependency_status = check_dependency()
     if dependency_status:
         logger.error("Dependency check failed")
         sys.exit(1)
-    
-    
+
     analysis = Analysis(args)
     # logger.info('building obj done')
     if analysis.status:
@@ -500,6 +489,14 @@ def main(args=None):
         sys.exit(1)
         
     logger.info(f'skip_count_pp_gb = {analysis.skip_count_pp_gb}, skip_get_mapped_reads = {analysis.skip_get_mapped_reads}')
+
+    rep1 = len(analysis.control_bed)
+    rep2 = len(analysis.case_bed) if analysis.case_bed else 0
+    window_size = analysis.config['window_size']
+    factor1 = analysis.config['normalize_factor1']
+    factor2 = analysis.config['normalize_factor2']
+    factor_flag = 0 if factor1 is None else 1
+
 
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
@@ -528,8 +525,7 @@ def main(args=None):
     fh_fa = open(fn_fa, 'r')
 
     short_genes = 0
-    unkown_transcript = 0
-    unkown_transcript_list = []
+
     # modify here, bench mode
     tmp = sorted(gtf_info)
     # for k, v in gtf_info.items():
@@ -561,7 +557,7 @@ def main(args=None):
 
     if not analysis.skip_get_mapped_reads:
         logger.info(f'Getting pp_gb count')
-        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, n_gene_cols)
+        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa)
 
         # close file handle
         for fn_lb, fn_bed in fls:
@@ -570,15 +566,38 @@ def main(args=None):
         
         # calculate FDR
         logger.info('Calculating FDR')
+        pause_index_str = {}
         for fn_lb, fn_bed in fls:
             fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
             fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
-            header_fdr = analysis.out_fls['fdr'][fn_lb]['header']
-            get_FDR_per_sample(fn_peak, fn_fdr, header_fdr)
+            pause_index_str = get_FDR_per_sample(fn_peak, fn_fdr,  pause_index_str)
 
+    else:
+        logger.debug('collecting pause index from FDR files')
+        pause_index_str = {}  # key = transcript_id
+        
+        # logger.warning('modify here')
+        # for fn_lb, fn_bed in fls:
+        #     fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
+        #     fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
+        #     pause_index_str = get_FDR_per_sample(fn_peak, fn_fdr, pause_index_str)
+        
+        for fn_lb, _ in fls:
+            fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
+            with open(fn_fdr) as f:
+                header = f.readline().strip().split('\t')
+                idx_pindex, idx_pval, idx_fdr = header.index('pauseIndex'), header.index('pvalue'), header.index('FDR')
+                for i in f:
+                    line = i[:-1].split('\t')
+                    transcript_id, pindex, pval, fdr = [line[_] for _ in [0, idx_pindex, idx_pval, idx_fdr]]
+                    pause_index_str.setdefault(transcript_id, []).extend([pindex, pval, fdr])
+    
+    # sys.exit(0)
+    
     
     # count_pp_gb
     fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    # analysis.skip_count_pp_gb = 0
     if not analysis.skip_count_pp_gb:
         if analysis.skip_get_mapped_reads:
             logger.debug('Re-use previous mapped reads count')
@@ -605,74 +624,66 @@ def main(args=None):
                 row += pp_str[transcript_id] + gb_str[transcript_id]
                 print('\t'.join(row), file=o)
 
-    tmp = json.dumps(time_cost, indent=3)
-    print(tmp)
-    
-    # modify here
-    logger.info('debug exit')
-    sys.exit(0)
-    
-    # run change_pp_gb
-    rep1 = len(analysis.control_bed)
-    rep2 = len(analysis.case_bed) if analysis.case_bed else 0
-    window_size = analysis.config['window_size']
-    factor1 = analysis.config['normalize_factor1']
-    factor2 = analysis.config['normalize_factor2']
-    factor_flag = 0 if factor1 is None else 1
-    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
+    if time_cost:
+        tmp = json.dumps(time_cost, indent=3)
+        print(tmp)
     
 
-    # change_pindex
+    logger.info('Change_pp_gb')
+    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)
+
     fno_prefix = 'longeRNA-' if analysis.longerna else ''
-    change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
     
     # dump pindex.txt
     # pause_index[fn_lb][transcript_id] = [pro_vs_pb, pvalue, fdr]
+    logger.debug('Dump pindex.txt')
     header_extra = []
     for fn_lb, fn_bed in fls:
         header_extra += [f'{fn_lb}-pindex', f'{fn_lb}-pvalue', f'{fn_lb}-FDR']
     header = analysis.gene_cols + header_extra
-    fno =  os.path.join(analysis.known_gene_dir, prefix + 'pindex.txt') 
+    fno =  os.path.join(analysis.known_gene_dir, fno_prefix + 'pindex.txt') 
     with open(fno, 'w') as o:
         print('\t'.join(header), file=o)
-        for transcript_id, gene_info in gtf_info.items():
+        for transcript_id, data in pause_index_str.items():
             row = [transcript_id]
             if not analysis.longerna:
-                row.append(gene_info['gene_name'])
-            for fn_lb, fn_bed in fls:
-                for k in pause_index[fn_lb][transcript_id]:
-                    row += k
+                row.append(gtf_info[transcript_id]['gene_name'])
+            row += data
             print('\t'.join(map(str, row)), file=o)
 
     # boxplot
     logger.info(f'plotting boxplot')
     draw_box_plot(n_gene_cols, analysis.out_dir, 'boxplot', rep1, rep2)
-    
-    # simple_heatmap
-    logger.info(f'plotting pindex heatmap')
-    draw_heatmap_pindex(n_gene_cols, analysis.out_dir)
-    
-    
+
+    if rep2 > 0:
+    # change_pindex
+        logger.debug('Running change_pindex')
+        change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
+        # simple_heatmap
+        logger.info(f'plotting pindex heatmap')
+        draw_heatmap_pindex(n_gene_cols, analysis.out_dir)
+
+        # heatmap
+        logger.info(f'plotting heatmap for pp_change')
+        fn_glist = os.path.join(analysis.inter_dir, prefix + "genes_for_heatmap.txt")
+        fn_pp_change = os.path.join(analysis.known_gene_dir, prefix + "pp_change.txt")
+        with open(fn_pp_change) as f, open(fn_glist, 'w') as o:
+            f.readline()
+            # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
+            for i in f:
+                line = i.split('\t', 4)
+                transcript_id, logfc = line[0], line[3]
+                if logfc != 'NA':
+                    print(transcript_id, file=o)
+        
+        # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
+        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fn_glist, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, ref_fls=analysis.ref, region_size=5000, bin_size=200, outname='heatmap')
+
     # modify here
     logger.info('debug exit')
     sys.exit(0)
     
     
-    # heatmap
-    logger.info(f'plotting heatmap for pp_change')
-    fn_glist = os.path.join(analysis.inter_dir, prefix + "genes_for_heatmap.txt")
-    fn_pp_change = os.path.join(analysis.known_gene_dir, prefix + "pp_change.txt")
-    with open(fn_pp_change) as f, open(fn_glist, 'w') as o:
-        f.readline()
-        # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
-        for i in f:
-            line = i.split('\t', 4)
-            transcript_id, logfc = line[0], line[3]
-            if logfc != 'NA':
-                print(transcript_id, file=o)
-    
-    # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
-    draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fn_glist, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, ref_fls=analysis.ref, region_size=5000, bin_size=200, outname='heatmap')
     
     
     # get alternative isoforms

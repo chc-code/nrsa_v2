@@ -13,6 +13,7 @@ from subprocess import Popen, PIPE
 import pandas as pd
 import numpy as np
 import fisher
+import traceback
 # import bisect
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
@@ -455,10 +456,10 @@ def get_summit(count_file_fh, count_file_idx, chr_, strand, start, end):
     return summit[1]
 
 
-def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=None):
+def draw_box_plot(n_gene_cols, pwout, out_name, n_rep1, n_rep2=None, gn_list=None):
     """
     gn_list, the genes to be plotted, if None, all genes will be plotted
-    pw_out: folder name for pause_PROseq.pl outputs
+    pwout: folder name for pause_PROseq.pl outputs
     n_rep1 and n_rep2:  the replacates number for condition1 and conditon2
     n_rep2 is optional
     """
@@ -469,15 +470,15 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     gn_list = set(gn_list) if gn_list else None
     # check the pause_PROseq.pl output files
     for i in ['known_gene', 'intermediate']:
-        ipw = f'{pw_out}/{i}'
+        ipw = f'{pwout}/{i}'
         if not os.path.exists(ipw):
             logger.error(f'output folder of pause_PROseq.py not found: {i}')
             return 1
 
     # read pp_gb results
-    fn_pp_gb = f'{pw_out}/known_gene/normalized_pp_gb.txt'
-    fn_pindex = f'{pw_out}/known_gene/pindex.txt'
-    fno = f'{pw_out}/intermediate/boxplot_data.txt'
+    fn_pp_gb = f'{pwout}/known_gene/normalized_pp_gb.txt'
+    fn_pindex = f'{pwout}/known_gene/pindex.txt'
+    fno = f'{pwout}/intermediate/boxplot_data.txt'
     
     header_str = []
     out_str = {} # key = gn, v = list combined from pp_gb and pindex
@@ -561,9 +562,9 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
     pindex.columns = sam_list
     
     # plot
-    fn_plot_pp = f'{pw_out}/known_gene/{out_name}_pp_density.pdf'
-    fn_plot_gb = f'{pw_out}/known_gene/{out_name}_gb_density.pdf'
-    fn_plot_pindex = f'{pw_out}/known_gene/{out_name}_pausing_index.pdf'
+    fn_plot_pp = f'{pwout}/known_gene/{out_name}_pp_density.pdf'
+    fn_plot_gb = f'{pwout}/known_gene/{out_name}_gb_density.pdf'
+    fn_plot_pindex = f'{pwout}/known_gene/{out_name}_pausing_index.pdf'
     
     def plot_task(fn, ylabel, data, factor=1):
         with PdfPages(fn) as pdf:
@@ -619,7 +620,7 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
             plt.title(f"gbd: rep1vs.rep{k + 1}")
             plt.xlabel(xlabel)
 
-        plt.savefig(f"{pw_out}/known_gene/Reps-condition{condition_sn}.tif")
+        plt.savefig(f"{pwout}/known_gene/Reps-condition{condition_sn}.tif")
         plt.close()
     
     if n_rep1 > 1:
@@ -628,14 +629,14 @@ def draw_box_plot(n_gene_cols, pw_out, out_name, n_rep1, n_rep2=None, gn_list=No
         plot_hist(n_rep2, n_rep1, pp_density, gb_density, 2)
     
 
-def draw_heatmap_pindex(n_gene_cols, pw_out):
+def draw_heatmap_pindex(n_gene_cols, pwout):
     """
     plot for the pindex change
     """
     from matplotlib import pyplot as plt
     import matplotlib.colors as mcolors
     
-    fn_pindex_change = f'{pw_out}/known_gene/pindex_change.txt'
+    fn_pindex_change = f'{pwout}/known_gene/pindex_change.txt'
     if not os.path.exists(fn_pindex_change):
         logger.error(f'{fn_pindex_change} not found')
         return 1
@@ -667,57 +668,65 @@ def draw_heatmap_pindex(n_gene_cols, pw_out):
 
     img = ax.imshow(data_plot.iloc[:, 2].values.reshape(-1, 1), cmap=my_palette, aspect='auto')
 
-    plt.savefig(f'{pw_out}/known_gene/pindex_change.pdf', bbox_inches='tight')
+    plt.savefig(f'{pwout}/known_gene/pindex_change.pdf', bbox_inches='tight')
     plt.close()
 
 
-def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, ref_fls, region_size=5000, bin_size=200, outname='heatmap'):
+
+def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, region_size=5000, bin_size=200, outname='heatmap'):
     """
     draw heatmap for pp change
-    fn_glist = gene list for plot (the IDs as listed in the first column of pp_change.txt)
-    fls_ctrl, fls_case, foramt is like [fn_bed, idx_bed, fn_lb]
+    fls_ctrl, fls_case, foramt is like [fn_lb, fn_bed]
     region_size, upstream and downstream distance relative to TSS for plotting PRO-seq signal (bp, default: 5000),should can be divided by bin size
     bin_size (bp, default: 200),should can be divided by 2
     """
     from matplotlib import pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
     fls_case = fls_case or []
     
     ppchange = {}
-    fn_pp_change = f'{pw_out}/known_gene/pp_change.txt'
-    fn_tss = ref_fls['tss']
-    fno = f'{pw_out}/intermediate/genes_for_heatmap.pdf'
-    fn_split_bin_bed = f'{pw_out}/intermediate/region_bed.tmp'
-    fn_data_bed = f'{pw_out}/intermediate/data_bed.tmp'
-    fn_tss_padding = f'{pw_out}/intermediate/infile_bed.tmp' # expand the fn_tss with upstream and downstream region by region_size
+    fn_pp_change = f'{pwout}/known_gene/pp_change.txt'
+    fn_out_pdf = f'{pwout}/known_gene/heatmap.pdf'
+    fn_split_bin_bed = f'{pwout}/intermediate/tss_split_regions.bed'
+    # fn_data_bed = f'{pwout}/intermediate/data_bed.tmp'
+    fn_tss_padding = f'{pwout}/intermediate/infile_bed.tmp' # expand the fn_tss with upstream and downstream region by region_size
+    time_bedtools_coverage = 0
 
     if bin_size % 2 or region_size % bin_size:
         logger.error(f'bin_size should be even and region_size should be divisible by bin_size')
         return 1
 
-    bin_number = region_size * 2 / bin_size + 1  # *2 because of the upstream and downstream
+    bin_number = int(region_size * 2 / bin_size + 1)  # *2 because of the upstream and downstream
 
-    with open(fn_glist) as f:
-        gn_list = {i.strip() for i in f}
-    
+    def to_number(s):
+        if not s or s.upper() == 'NA':
+            return 'NA'
+        return float(s)
+
     # read pp_change results
     # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
+    n_case, n_ctrl = len(fls_case), len(fls_ctrl)
+    
+    # gene_list is the genes with non-NA log2FoldChange in the pp_change.txt
     with open(fn_pp_change) as f:
         header = f.readline().strip().split('\t')
+        logger.debug(header)
         idx_transcript = header.index('Transcript')
         idx_logfc = header.index('log2FoldChange')
         for i in f:
-            line = i.strip().split('\t')
+            line = i[:-1].split('\t')
             transcript_id = line[idx_transcript]
-            if transcript_id in gn_list:
-                logfc = 'NA' if line[idx_logfc] == 'NA' else float(line[idx_logfc])
+            logfc = to_number(line[idx_logfc])
+            if logfc != 'NA':
                 ppchange[transcript_id] = logfc
-    
+
+
     # tss file
     # chr1	11874	11874	NR_046018.2	+
-    tss_res = []
+    # tss_res = []
     tss_with_padding = []
-    transcript_id_list = []
     strand_info = {}
+    half_bin_size = int(bin_size / 2)
     with open(fn_tss) as f:
         for i in f:
             line = i.strip().split('\t')
@@ -727,70 +736,108 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, re
             if transcript_id in ppchange and ppchange[transcript_id] != 'NA':
                 logfc = ppchange[transcript_id]
                 row = [transcript_id, chr_, pos, strand, logfc]
-                transcript_id_list.append(transcript_id)
                 strand_info[transcript_id] = strand
 
-                left_boundary = pos_int - region_size - bin_size/2
-                right_boundary = pos_int + region_size + bin_size/2
+                left_boundary = pos_int - region_size - half_bin_size
+                right_boundary = pos_int + region_size + half_bin_size
                 row_tmp = [chr_, left_boundary, right_boundary, transcript_id, strand]
 
-                tss_res.append(row)
+                # tss_res.append(row)
                 tss_with_padding.append(row_tmp)
-    if len(tss_res) == 0:
-        logger.error(f'no gene in tss file match with the gene list, please check the gene names')
+    if len(tss_with_padding) == 0:
+        logger.error(f'no gene in tss file match with the gene list, please check if the transcript names in the GTF file match with the TSS file')
         return 1
     
     # write tss_with_beding bed and data_bed
     with open(fn_tss_padding, 'w') as o:
         for i in tss_with_padding:
             o.write('\t'.join(map(str, i)) + '\n')
-    with open(fn_data_bed, 'w') as o:
-        for i in tss_res:
-            o.write('\t'.join(map(str, i)) + '\n')
+    # with open(fn_data_bed, 'w') as o:
+    #     for i in tss_res:
+    #         o.write('\t'.join(map(str, i)) + '\n')
 
     # use bedtools to split the fn_tss_padding, srcwinnum, use the orignal region_label and bin number
     # after running, the last column is like  origlb_1, origlb_2, ....  _1, and _2 are the bin number
-    cmd = f'bedtools makewindows -b {fn_tss_padding} -n {bin_number} -i srcwinnum > {fn_split_bin_bed}'
+    
+    cmd = f'bedtools makewindows -b {fn_tss_padding} -n {bin_number} -i srcwinnum |bedtools sort -i - > {fn_split_bin_bed}'
+    logger.debug('bedtools makewindows done')
     retcode = run_shell(cmd, echo=True)
     if retcode:  # fail to makewindow
         logger.error(f'failed to run bedtools makewindows')
         return 1
+    def build_split_region_bed(fn_lb, chr_map):
+        fno = f'{pwout}/intermediate/{fn_lb}.split_region.tmp'
+        with open(fn_split_bin_bed) as f, open(fno, 'w') as o:
+            for i in f:
+                chr_, rest = i.split('\t', 1)
+                chr_orig = chr_map.get(chr_, chr_)
+                o.write(f'{chr_orig}\t{rest}')
+        return fno
+    
+    
+    # build the new tss for the first file, and use it  for the rest
+    fn_lb = fls_ctrl[0][0]
+    fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
+    with open(fn_chr_map, 'rb') as f:
+        chr_map = pickle.load(f)
+    split_bed_per_file = build_split_region_bed(fn_lb, chr_map)
+    
+
     
     # load the normalization factors (nf.txt)
-    fn_nf = f'{pw_out}/intermediate/nf.txt'
+    fn_nf = f'{pwout}/intermediate/nf.txt'
     factors_dict = {}
     with open(fn_nf) as f:
         f.readline() # header
         for i in f:
             sample, factor = i.strip().split('\t')
             factors_dict[sample] = float(factor)
-            
+    
+    # logger.debug(factors_dict)
     # main part, get the overlap of the input bed files with the split bin bed
     # coverage_by_strand_flag = '-s'  # by_strand, if used, need to update the reference tss file
     coverage_by_strand_flag = '' # current setting
     for condition, fls in {'control': fls_ctrl, 'case': fls_case}.items():
-        fn_count_sum = f'{pw_out}/intermediate/{condition}.count'
-        count = {}
+        fn_count_sum = f'{pwout}/intermediate/{condition}.count'
+        count = {}   # the sum of norm count of each bin across all samples in this condition
         n_sam_condition = len(fls)
-        for fn_bed, idx_bed, fn_lb in fls:
+        for fn_lb, fn_bed  in fls:
             norm_factor = factors_dict[fn_lb]
-            fn_coverage_tmp = f'{pw_out}/intermediate/{fn_lb}.coverage_count.tmp'
+            
+            # fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
+            # with open(fn_chr_map, 'rb') as f:
+            #     chr_map = pickle.load(f)
+            # split_bed_per_file = build_split_region_bed(fn_lb, chr_map)
+            
+            fn_coverage_tmp = f'{pwout}/intermediate/{fn_lb}.coverage_count.tmp'
             # do we need to calculate the coverage by strand??? 
-            cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts {coverage_by_strand_flag} > {fn_coverage_tmp}'
+
+            # if not os.path.exists(fn_coverage_tmp):
+            logger.info(f'getting coverage for {fn_lb}')
+            s = time.time()
+            cmd = f'bedtools coverage -a {split_bed_per_file} -b {fn_bed} -counts {coverage_by_strand_flag} -sorted > {fn_coverage_tmp}'
+            # logger.debug(cmd)
             retcode = run_shell(cmd)
             if retcode:
                 logger.error(f'failed to run bedtools coverage for {fn_lb}')
                 return 1
             # process the coverage file
             # chr1	323932	323952	NR_028322.1_8   10
+            dur = time.time() - s
+            time_bedtools_coverage += dur
+            logger.debug(f'done, time used = {dur:.2f}s')
+
             with open(fn_coverage_tmp) as f:
                 for i in f:
                     _, transcript_id_chunk, ict = i.strip().rsplit('\t', 2)
+                    if ict == '0':
+                        continue
                     transcript_id, bin_sn = transcript_id_chunk.rsplit('_', 1)
-                    bin_sn = int(bin_sn)
+                    # bin_sn = int(bin_sn)
                     ict = int(ict)
                     ict_norm = ict * norm_factor
-                    count.setdefault(transcript_id, {})[bin_sn] = ict_norm
+                    count.setdefault(transcript_id, {}).setdefault(bin_sn, 0)
+                    count[transcript_id][bin_sn] += ict_norm
 
 
         with open(fn_count_sum, 'w') as o:
@@ -798,22 +845,25 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, re
             # header = ['Transcript'] + [f'up_{i}' for i in range(half_bin_number, 0, -1)] + ['tss'] + [f'down_{i}' for i in range(1, half_bin_number + 1)]
             header = [f'up_{i}' for i in range(half_bin_number, 0, -1)] + ['tss'] + [f'down_{i}' for i in range(1, half_bin_number + 1)]
             print('\t'.join(header), file=o)
+            bin_num_plus = [str(_) for _ in range(1, bin_number + 1)]
+            bin_num_minus = [str(_) for _ in range(bin_number, 0, -1)]
             for transcript_id, v1 in count.items():
                 strand = strand_info[transcript_id]
                 bin_count_list = []
-                bin_number_order = range(1, bin_number + 1) if strand == '+' else range(bin_number, 0, -1)
+                bin_number_order = bin_num_plus if strand == '+' else bin_num_minus
                 
                 for bin_sn in bin_number_order:
-                    bin_count_list.append(str(v1[bin_sn]))
+                    bin_count_list.append(str(round(v1.get(bin_sn, 0) / n_sam_condition, 2))) # average the count across all samples
                 tmp = "\t".join(bin_count_list)
                 print(f'{transcript_id}\t{tmp}', file=o)
     
+    logger.debug(f'total time used for bedtools coverage: {time_bedtools_coverage:.2f}s')
+
     # heatmap.R  --args file=\"$data_bed\" outdir=\"$inter_dir\" pname=\"$outname\" window=$bin_size region=$region_size
-    # fn_data_bed => data_bed.tmp
     # each row is [transcript_id, chr_, pos, strand, logfc]
     # read the count table
-    df_case = pd.read_csv(f'{pw_out}/intermediate/case.count', sep='\t')
-    df_ctrl = pd.read_csv(f'{pw_out}/intermediate/control.count', sep='\t')
+    df_case = pd.read_csv(f'{pwout}/intermediate/case.count', sep='\t')
+    df_ctrl = pd.read_csv(f'{pwout}/intermediate/control.count', sep='\t')
     case_log = np.log2(df_case + 1)
     ctrl_log = np.log2(df_ctrl + 1)
     df_delta = case_log - ctrl_log
@@ -821,11 +871,38 @@ def draw_heatmap_pp_change(n_gene_cols, pw_out, fn_glist, fls_ctrl, fls_case, re
     cutoff = np.quantile(abs_values, 0.75) # verified, match with R code
     cutoff1 = round(cutoff, 1)
     df_delta = df_delta.clip(lower=-cutoff, upper=cutoff)
-    
+    # logger.info(df_delta.head())
     # plot
+
+    # Set up the layout and figure size
+    fig, axs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [10, 1]}, figsize=(6, 18))
+    plt.subplots_adjust(hspace=0)
+
+    lab = round(region_size / 1000, 1) # label for the heatmap
+    # Define color palette
+    colors = ["blue", "yellow"]
+
+    # Create a colormap with 5 discrete colors
+    my_palette = LinearSegmentedColormap.from_list("custom_palette", colors, N=5)
     
+    # Bottom color bar (equivalent to the first image call in R)
+    axs[1].imshow(np.arange(1, 6).reshape(-1, 1), cmap=my_palette, aspect='auto')
+    axs[1].axis('off')
+    axs[1].xaxis.set_ticks_position('none')
+    axs[1].set_xticks([0, 2, 4])
+    axs[1].set_xticklabels([f"-{cutoff1}", "0", f"+{cutoff1}"], fontsize=12)
+
+    # Main heatmap (equivalent to the second image call in R)
+    im = axs[0].imshow(df_delta, cmap=my_palette, vmin=-cutoff, vmax=cutoff, aspect='auto')
+    axs[0].axis('off')
+    axs[0].set_xticks([0, df_delta.shape[1] // 2, df_delta.shape[1] - 1])
+    axs[0].set_xticklabels([f"-{lab}K", "0", f"+{lab}K"], fontsize=12)
+
+    # Save the figure as PDF
+    plt.savefig(fn_out_pdf, bbox_inches='tight', dpi=300)
+    plt.close()
     
-    os.system(f'rm {pw_out}/intermediate/*.tmp')
+    # os.system(f'rm {pwout}/intermediate/*.tmp')
 
 
 def groseq_fisherexact_pausing_for_gene(c1, l1, c2, l2):
@@ -854,7 +931,7 @@ def groseq_fisherexact_comparison_for_gene(tssCountGene1, gbCountGene1, tssCount
     c4 = round(float(gbCountGene2))
     
     if c1 == 0 or c2 == 0 or c3 == 0 or c4 == 0:
-        return None
+        return np.nan
     
     # default = two-sided
     return fisher.pvalue(c1, c2, c3, c4).two_tail
@@ -959,7 +1036,7 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     if n_sam == 2:
         log2fc = np.log2(data.iloc[:, n_gene_cols + 1] / size_factors[1]) / (data.iloc[:, n_gene_cols] / size_factors[0])
         res_df = data.iloc[:, idx_gene_cols]
-        res_df['log2fc'] = log2fc
+        res_df['log2FoldChange'] = log2fc
         return res_df, size_factors
 
     if size_factors_in is None:  # gb change
@@ -1075,7 +1152,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     n_sam = rep1 + rep2
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2)
     
-    data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False)
+    data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
     
     data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R
     data_drop_pp = data_drop.iloc[:, idx_gene_cols + idx_ppc_combined] # data_pp in R
@@ -1109,7 +1186,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         with HiddenPrints():
             res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
             res_df_full = pd.concat([res_df, data_drop_gb.iloc[:, idx_gene_cols]])
-            res_df_full.to_csv(f'{out_dir}/known_gene/gb_change.txt', sep='\t', index=False)
+            res_df_full.to_csv(f'{out_dir}/known_gene/gb_change.txt', sep='\t', index=False, na_rep='NA')
             
             # pp change
             try:
@@ -1124,7 +1201,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
                 sys.exit(1)
                 
             res_df_full = pd.concat([res_df, data_drop_pp.iloc[:, idx_gene_cols]])
-            res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False)
+            res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False, na_rep='NA')
     elif rep1 == 1:
         logger.debug('single contrl sample only')
         size_factors = 1 # size factor is 1 for the only sample
@@ -1136,7 +1213,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
     nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
-    nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False)
+    nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
     return size_factors, sam_list
     
 
@@ -1196,7 +1273,7 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     data = data.drop('comparison', axis=1)
     
     print('dumping result')
-    data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t')
+    data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t', na_rep='NA')
 
 def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
     """
@@ -1266,7 +1343,7 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     gbc_norm = data_raw.iloc[:, idx_gbc_combined] * norm_factors
     gbd_norm = data_raw.iloc[:, idx_gbd_combined] * norm_factors
     data_normalized = pd.concat([data_raw.iloc[:, :n_prev_cols], ppc_norm, ppd_norm, gbc_norm, gbd_norm], axis=1)
-    data_normalized.to_csv(fn_norm, sep='\t', index=False)
+    data_normalized.to_csv(fn_norm, sep='\t', index=False, na_rep='NA')
 
 
 def cmhtest(row, rep1, rep2):
@@ -1312,7 +1389,7 @@ def get_pvalue_2_sample(row, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc2):
     return pvalue
 
 def add_FDR_col(df, col_pvalue, col_FDR='FDR'):
-    pvals = df[col_pvalue].dropna()
+    pvals = df[col_pvalue].replace('NA', np.nan).dropna()
     fdr = multipletests(pvals, method='fdr_bh')[1]
     df.loc[pvals.index, 'FDR'] = fdr
     return df
@@ -1327,6 +1404,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
     The transcripts were not collapsed to gene level
     """
     
+    # compared with previous results, matches
     if fno_prefix not in ['', 'longeRNA-']:
         logger.error(f'invalid file prefix for pindex_change, should be empty or "longeRNA-", input="{fno_prefix}"')
         return 1
@@ -1350,19 +1428,38 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
     
     if n_sam == 2:
         # use fisher exact test
-        idx_ppc1 = col_idx['ppc']['cond1']
-        idx_ppc2 = col_idx['ppc']['cond2']
-        idx_gbc1 = col_idx['gbc']['cond1']
-        idx_gbd1 = col_idx['gbd']['cond1']
-        idx_gbc2 = col_idx['gbc']['cond2']
-        idx_gbd2 = col_idx['gbd']['cond2']
-        
-        data_out['pvalue'] = data_pass.apply(lambda x: get_pvalue_2_sample(x, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbd1), axis=1)
+        idx_ppc1 = col_idx['ppc']['cond1'][0]
+        idx_ppc2 = col_idx['ppc']['cond2'][0]
+        idx_gbc1 = col_idx['gbc']['cond1'][0]
+        idx_gbc2 = col_idx['gbc']['cond2'][0]
+        data_out = data_pass.iloc[:, idx_gene_cols].copy()
+        data_out['pvalue'] = data_pass.apply(lambda x: get_pvalue_2_sample(x, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc1), axis=1)
         data_out = add_FDR_col(data_out, 'pvalue')
+        # logger.info(data_out.head())
+
         
         # odds_ratio = (ppc2/ppc1) / (gbc2/gbc1) = ppc2 * gbc1 / (ppc1 * gbc2)
-        log2fc = data_pass.apply(lambda x: np.log2(x[idx_ppc2] * x[idx_gbc1] / (x[idx_ppc1] * x[idx_gbc2])), axis=1)
-        data_out = data_pass.iloc[:, idx_gene_cols]
+        def get_odds_ratio(row):
+            ppc1 = row[idx_ppc1]
+            ppc2 = row[idx_ppc2]
+            gbc1 = row[idx_gbc1]
+            gbc2 = row[idx_gbc2]
+            tmp = ppc1 * gbc2
+            if all([ppc1, ppc2, gbc1, gbc2, tmp]):
+                return ppc2 * gbc1 / (tmp)
+            return np.nan
+
+        try:
+            # log2fc = data_pass.apply(lambda x: np.log2(x[idx_ppc2] * x[idx_gbc1] / (x[idx_ppc1] * x[idx_gbc2])), axis=1)
+            log2fc = data_pass.apply(lambda x: np.log2(get_odds_ratio(x)), axis=1)
+        except:
+            e = traceback.format_exc()
+            logger.warning(e)
+            x = list(data_pass.iloc[0])
+            logger.warning(x)
+            logger.info(get_odds_ratio(x))
+            logger.warning(f'{x[idx_ppc2]=}, {x[idx_gbc1]=}, {x[idx_ppc1]=}, {x[idx_gbc2]=}')
+            sys.exit(1)
         
         data_out['log2fc'] = log2fc
 
@@ -1374,11 +1471,12 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         data_out = data_pass.iloc[:, idx_gene_cols].copy()
         data_out[['log2fc', 'pvalue']] = data_pass.iloc[:, n_gene_cols:].apply(lambda x: cmhtest(list(x), rep1, rep2), axis=1, result_type='expand')
         data_out = add_FDR_col(data_out, 'pvalue')
-    
-    data_out = data_out.sort_values('FDR')
+        data_out = data_out.sort_values('FDR')
+        
     data_out_full = pd.concat([data_out, data_drop.iloc[:, idx_gene_cols]]).fillna('NA')
-    data_out_full.to_csv(f'{out_dir}/known_gene/{fno_prefix}pindex_change.txt', sep='\t', index=False)
-    logger.info(f'pindex_change done : {ana_type}')
+    data_out_full.to_csv(f'{out_dir}/known_gene/{fno_prefix}pindex_change.txt', sep='\t', index=False, na_rep='NA')
+    # logger.info(f'pindex_change done : {ana_type}')
+    # logger.info(data_out.head())
 
 
 def change_enhancer(fn, out_dir, condition, rep1, rep2, factor1=None, factor2=None, factor_flag=0):
@@ -1435,7 +1533,16 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
     gene_info.update(new_info)
     return gene_info
 
-def process_gtf(fn_gtf):
+def build_tss(gtf_info, fn_tss):
+    # create the TSS file
+    # chr1	11874	11874	NR_046018.2	+
+    logger.info('creating TSS file')
+    with open(fn_tss, 'w') as f:
+        for k, v in gtf_info.items():
+            itss = v['start'] if v['strand'] == '+' else v['end']
+            f.write(f'{v["chr"]}\t{itss}\t{itss}\t{k}\t{v["strand"]}\n')
+
+def process_gtf(fn_gtf, pwout):
     """
     process the gtf file, get the gene start and end position, and other info
     gtf position is 1-idx, full closed
@@ -1443,6 +1550,10 @@ def process_gtf(fn_gtf):
 
     err = {'no_transcript_id': 0, 'no_gene_name': 0, 'invalid_line_format': 0, 'invalid_strand': 0}
     fn_gtf = os.path.abspath(fn_gtf)
+    fn_gtf_lb = os.path.basename(fn_gtf).replace('.gz', '').replace('.gtf', '')
+
+    fn_tss = f'{pwout}/intermediate/{fn_gtf_lb}.tss.txt'
+
     # check if have write permission to the folder of the gtf file
     if not os.access(os.path.dirname(fn_gtf), os.W_OK):
         home = os.path.expanduser("~")
@@ -1454,14 +1565,17 @@ def process_gtf(fn_gtf):
     if 'gtf' not in fn_gtf.rsplit('.', 2)[-2:]:
         logger.error(f'the gtf file should have the extension of .gtf: {fn_gtf}')
         sys.exit(1)
-        return None, err
+        return None, fn_tss, err
     
-    fn_gtf_lb = os.path.basename(fn_gtf).replace('.gz', '').replace('.gtf', '')
     fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
     if os.path.exists(fn_gtf_pkl):
         logger.debug('loading gtf from pickle')
+        
         with open(fn_gtf_pkl, 'rb') as f:
-            return pickle.load(f), err
+            gtf_info = pickle.load(f)
+        if not os.path.exists(fn_tss):
+            build_tss(gtf_info, fn_tss)
+        return gtf_info, fn_tss, err
     
     gtf_col_idx = {
         'chr': 0,
@@ -1549,10 +1663,11 @@ def process_gtf(fn_gtf):
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)
 
+    build_tss(res, fn_tss)
     err_total = sum(err.values())
     if err_total:
         logger.info(f'error in parsing gtf file: {err}')
-    return res, err
+    return res, fn_tss, err
 
 
 
@@ -1606,7 +1721,7 @@ def get_lb(fn):
 
 
 
-def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
+def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size, reuse=False):
     """
     fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
     process the bed file, and get the count of the read end regarding strand.
@@ -1615,12 +1730,14 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
     2. bed file, record the read end chr, read_end position, strand and the count of reads with this read end position
     
     bin_size = 200 # compared bin size of 10, 20, 50, 100 and 200 and 500.  200 is the best, maybe because when getting the gb count, the size fit the distribution
+    return chr_map is used to make the chr pattern in the gtf file and input bed file consistant, esp. when running bedtools
 
     """
     fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{bin_size}.pkl'
     fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
+    fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
     
-    if os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
+    if reuse and os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
         logger.info(f'Loading pre-counting data...')
     
         with open(fn_count_per_base, 'rb') as f:
@@ -1647,6 +1764,7 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
             count_per_base[chr_][read_end][strand_idx] += 1
 
         # refine the chr_
+        chr_map = {refine_chr(k): k for k in count_bin}
         count_per_base = {refine_chr(k): v for k, v in count_per_base.items()}
         count_bin = {refine_chr(k): v for k, v in count_bin.items()}
     logger.info('done.')
@@ -1655,10 +1773,16 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size):
         pickle.dump(count_per_base, f)
     with open(fn_count_bin, 'wb') as f:
         pickle.dump(count_bin, f)
+        
+    with open(fn_chr_map, 'wb') as f:
+        pickle.dump(chr_map, f)
     logger.debug('dump to pickle done.')
+    
+    
+    
     return count_per_base, count_bin
 
-def build_bin_dict(bin10, pw_out, fn_lb, bin_size):
+def build_bin_dict(bin10, pwout, fn_lb, bin_size):
    # based on the result of bin=10, build bin = 50, 100 dict
     res = {'bin_size': bin_size}
     for chr_, v1 in bin10.items():
@@ -1669,7 +1793,7 @@ def build_bin_dict(bin10, pw_out, fn_lb, bin_size):
             res[chr_][pos][0] += p
             res[chr_][pos][1] += m
     print('dumping')
-    with open(f'{pw_out}/intermediate/bed/{fn_lb}.bin_of_{bin_size}.pkl', 'wb') as o:
+    with open(f'{pwout}/intermediate/bed/{fn_lb}.bin_of_{bin_size}.pkl', 'wb') as o:
         pickle.dump(res, o)
     return res
 

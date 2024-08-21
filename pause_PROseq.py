@@ -17,23 +17,24 @@ def getargs():
     ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
     ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
-    ps.add_argument('-o', help="""required, output/work directory""", required=True)
-    ps.add_argument('-organism', '-m', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
+    ps.add_argument('-pwout', '-output', help="""required, output/work directory""", required=True)
+    ps.add_argument('-organism', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
 
     ps.add_argument('-gtf', help="""user specified GTF file, if not specified, will use the default GTF file for the organism""")
     ps.add_argument('-fa', help="""Full path for the fasta file for the genome. If not specified, will search under the fa folder under the package directory. e.g. organism is hg19, then the default fasta file should be fa/hg19.fa""")
     ps.add_argument('-f1', help="""normalization factors for samples of condition1, separated by space. If no normalization factor is specified, we will use DEseq2 default method to normalize""", nargs='*', type=float)
     ps.add_argument('-f2', help="""normalization factors for samples of condition2, same as -f1""", nargs='*', type=float)
-    ps.add_argument('-up', '-u', help="""define the upstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
-    ps.add_argument('-down', '-d', help="""define the downstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
-    ps.add_argument('-gb', '-b', help="""define the start of gene body density calculation (bp, default: 1000)""", type=int, default=1000)
-    ps.add_argument('-min_gene_len', '-l', help="""define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored""", type=int, default=1000)
-    ps.add_argument('-window', '-w', help="""define the window size (bp, default: 50)""", type=int, default=50)
-    ps.add_argument('-step', '-s', help="""define the step size (bp, default: 5)""", type=int, default=5)
+    ps.add_argument('-up', '-pp_up', help="""define the upstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
+    ps.add_argument('-down', '-pp_down', help="""define the downstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
+    ps.add_argument('-gb', '-gb_start', help="""define the start of gene body density calculation (bp, default: 1000)""", type=int, default=1000)
+    ps.add_argument('-min_gene_len', help="""define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored""", type=int, default=1000)
+    ps.add_argument('-window', '-window_size', help="""define the window size (bp, default: 50)""", type=int, default=50)
+    ps.add_argument('-step', '-step_size', help="""define the step size (bp, default: 5)""", type=int, default=5)
     ps.add_argument('-bench', '-test', help="""bench mode, only process the first 10 genes for testing purpose""", action='store_true')
+    ps.add_argument('-reuse', help="""reuse the previous pre-count result for the bed files, will save time if the bed files have ben already processed by this script""", action='store_true')
     # ps.add_argument('-overwrite', help="""if the mapped reads count file already exists, overwrite it, default is reuse the old ones""", action='store_true')
     ps.add_argument('-verbose', '-v', help="""verbose mode, print more information""", action='store_true')
-    ps.add_argument('-testfunc', help="""test the new functions,debug mode""", action='store_true')
+    # ps.add_argument('-testfunc', help="""test the new functions,debug mode""", action='store_true')
     args = ps.parse_args()
     
     return args
@@ -138,7 +139,7 @@ class Analysis:
         
         # folders
         self.bin_dir = os.path.dirname(os.path.realpath(__file__))
-        self.out_dir = args.o or os.getcwd()
+        self.out_dir = args.pwout or os.getcwd()
         self.inter_dir = os.path.join(self.out_dir, 'intermediate')
         self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
@@ -225,7 +226,7 @@ class Analysis:
             self.gene_cols = ['Transcript', 'Gene']
             self.longerna_flag_str = ''
         
-        self.skip_get_mapped_reads = 1
+        self.skip_get_mapped_reads = 0
         self.skip_count_pp_gb = 0
 
         fn_lb_uniq = set()
@@ -249,22 +250,11 @@ class Analysis:
             
             fh_bed_peaks = open(fn_bed_peaks, 'w')
             fh_bed_peaks.write('\t'.join(header_bed_peaks) + '\n')
-            self.skip_get_mapped_reads = 0
             self.out_fls['bed_peaks'][fn_lb] = {'fn': fn_bed_peaks, 'fh': fh_bed_peaks, 'header': header_bed_peaks, 'exist': file_exist_flag}
             
             header_fdr = header_bed_peaks + ['pvalue', 'FDR']
             fn_fdr = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_FDR.txt')
             self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'header': header_fdr}
-        
-        # fn_count_pp_gb = self.out_fls['count_pp_gb']
-        # if not self.overwrite_intermediate and self.skip_get_mapped_reads and os.path.exists(fn_count_pp_gb):
-            # self.skip_count_pp_gb = 1
-            
-        # modify here
-        # disable the skip steps
-        self.skip_get_mapped_reads = 0
-        self.skip_count_pp_gb = 0
-        
         
         
         if fn_lb_dup:
@@ -303,7 +293,7 @@ def test_get_peak(gene_info, fn_lb, fn_bed, pwout, bin_size):
     logger.debug(tmp)
 
 
-def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa):
+def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=False):
     
     invalid_chr_transcript = 0
     bin_size = analysis.bin_size
@@ -330,14 +320,8 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa):
     # prev_peak_pool = {}
     # genes_with_N = set()
     
-    
     for fn_lb, fn_bed in fls:
-        # if fn_lb not in count_pool:
-        #     count_pool[fn_lb] = pre_count_for_bed(fn_lb, fn_bed, pwout, bin_size)
-        # if fn_lb not in prev_peak_pool:
-        #     prev_peak_pool[fn_lb] = {}
-        # count_per_base, count_bin = count_pool[fn_lb]
-        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pwout, bin_size)
+        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pwout, bin_size, reuse=reuse_pre_count)
         prev_peak = {}
         
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
@@ -419,7 +403,7 @@ def main(args):
 
     # check if the attributes are present
     defined_attrs = vars(args)
-    required_attrs = {'in1', 'o', 'organism'}
+    required_attrs = {'in1', 'pwout', 'organism'}
     
     optional_attrs = {
         'in2': None,
@@ -434,6 +418,7 @@ def main(args):
         'window': 50,
         'step': 5,
         'bench': False,
+        'reuse': False,
     }
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
@@ -460,6 +445,7 @@ def main(args):
         sys.exit(1)
     
     logger.debug(vars(args))
+
     logger.debug(f'skip_count_pp_gb = {analysis.skip_count_pp_gb}, skip_get_mapped_reads = {analysis.skip_get_mapped_reads}')
 
     rep1 = len(analysis.control_bed)
@@ -471,25 +457,24 @@ def main(args):
 
     pro_up, pro_down, gb_down_distance, min_gene_len = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len']]
 
-    # modify here
 
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
-    gtf_info, err = process_gtf(analysis.ref['gtf'])
+    gtf_info, fn_tss, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
 
-    if args.testfunc:
-        logger.warning('Debugging mode')
-        transcript_id1 = 'NM_000051.3'
-        transcript_id2 = 'NM_000051'
-        gene_info = gtf_info.get(transcript_id1) or gtf_info[transcript_id2]
-        gene_info = add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance) 
-        logger.debug(gene_info)
-        fn_lb, fn_bed = analysis.input_fls[0]
+    # if args.testfunc:
+    #     logger.warning('Debugging mode')
+    #     transcript_id1 = 'NM_000051.3'
+    #     transcript_id2 = 'NM_000051'
+    #     gene_info = gtf_info.get(transcript_id1) or gtf_info[transcript_id2]
+    #     gene_info = add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance) 
+    #     logger.debug(gene_info)
+    #     fn_lb, fn_bed = analysis.input_fls[0]
         
-        logger.debug(fn_lb)
-        test_get_peak(gene_info, fn_lb, fn_bed, analysis.out_dir, bin_size=200)
-        logger.debug('done')
-        sys.exit(0)
+    #     logger.debug(fn_lb)
+    #     test_get_peak(gene_info, fn_lb, fn_bed, analysis.out_dir, bin_size=200)
+    #     logger.debug('done')
+    #     sys.exit(0)
 
 
 
@@ -544,10 +529,11 @@ def main(args):
     fls = analysis.input_fls # element is [fn_lb, fn_bed]
     sam_order = [_[0] for _ in fls]
     n_gene_cols = analysis.n_gene_cols
-
+    
+    reuse_pre_count = vars(args).get('reuse', False) # modify here
     if not analysis.skip_get_mapped_reads:
         logger.info(f'Getting pp_gb count')
-        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa)
+        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
 
         # close file handle
         for fn_lb, fn_bed in fls:
@@ -616,18 +602,21 @@ def main(args):
                 row += pp_str[transcript_id] + gb_str[transcript_id]
                 print('\t'.join(row), file=o)
 
-    if time_cost:
-        tmp = json.dumps(time_cost, indent=3)
-        print(tmp)
+    # if time_cost:
+    #     tmp = json.dumps(time_cost, indent=3)
+    #     print(tmp)
     
     fno_prefix = 'longeRNA-' if analysis.longerna else ''
 
     # modify here
     logger.info('Change_pp_gb')
+    # logger.warning('modify here')
+    
     change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)
     
     # dump pindex.txt
     # pause_index[fn_lb][transcript_id] = [pro_vs_pb, pvalue, fdr]
+    
     logger.debug('Dump pindex.txt')
     header_extra = []
     for fn_lb, fn_bed in fls:
@@ -648,45 +637,34 @@ def main(args):
     draw_box_plot(n_gene_cols, analysis.out_dir, 'boxplot', rep1, rep2)
 
     if rep2 > 0:
-    # change_pindex
+        # change_pindex
         logger.debug('Running change_pindex')
         change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
+        
+        
         # simple_heatmap
         logger.info(f'plotting pindex heatmap')
         draw_heatmap_pindex(n_gene_cols, analysis.out_dir)
         
-        # modify here
-        logger.info('debug exit')
-        sys.exit(0)
-    
+
         # heatmap
         logger.info(f'plotting heatmap for pp_change')
-        fn_glist = os.path.join(analysis.inter_dir, fno_prefix + "genes_for_heatmap.txt")
-        fn_pp_change = os.path.join(analysis.known_gene_dir, fno_prefix + "pp_change.txt")
-        with open(fn_pp_change) as f, open(fn_glist, 'w') as o:
-            f.readline()
-            # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
-            for i in f:
-                line = i.split('\t', 4)
-                transcript_id, logfc = line[0], line[3]
-                if logfc != 'NA':
-                    print(transcript_id, file=o)
-        
         # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
-        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, fn_glist, fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, ref_fls=analysis.ref, region_size=5000, bin_size=200, outname='heatmap')
 
+        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap')
 
-    
-    # get alternative isoforms
-    if rep2 > 0:
-        logger.info('Getting alternative TSS isoforms')
-        # get_alternative_isoform_across_conditions(fn_norm_count, out_dir, rep1, rep2)
-        fn_pp_gb_count_norm = os.path.join(analysis.known_gene_dir, prefix + 'normalized_pp_gb.txt')
-        if not os.path.exists(fn_pp_gb_count_norm):
-            logger.error(f"Normalized pp_gb file not found: {fn_pp_gb_count_norm}")
-            sys.exit(1)
-        get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
-    
+        # modify here
+        # logger.info('debug exit')
+        # sys.exit(0)
+
+        # # get alternative isoforms
+        # logger.info('Getting alternative TSS isoforms')
+        # # get_alternative_isoform_across_conditions(fn_norm_count, out_dir, rep1, rep2)
+        # fn_pp_gb_count_norm = os.path.join(analysis.known_gene_dir, prefix + 'normalized_pp_gb.txt')
+        # if not os.path.exists(fn_pp_gb_count_norm):
+        #     logger.error(f"Normalized pp_gb file not found: {fn_pp_gb_count_norm}")
+        #     sys.exit(1)
+        # get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
 
 
 def get_new_args(args, update_dict):
@@ -707,7 +685,7 @@ if __name__ == "__main__":
                 break
         logger.debug(f'Verbose mode is on')
     
-    args.o = os.path.realpath(args.o)
+    args.pwout = os.path.realpath(args.pwout)
     args.organism = args.organism
 
     if args.in1 is not None:
@@ -750,10 +728,10 @@ if __name__ == "__main__":
                     update_dict = {}
                     update_dict['in1'] = group_info[control]
                     update_dict['in2'] = group_info[case] or None
-                    out_dir = args.o or os.getcwd()
+                    out_dir = args.pwout or os.getcwd()
                     comp_str = control if case == 'null' else f'{case}_vs_{control}'
                     out_dir = os.path.join(out_dir, comp_str)
-                    update_dict['o'] = out_dir
+                    update_dict['pwout'] = out_dir
                     
                     args_new = get_new_args(args, update_dict)
                     # logger.info(vars(args_new))

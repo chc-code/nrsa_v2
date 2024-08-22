@@ -31,7 +31,7 @@ def getargs():
     ps.add_argument('-window', '-window_size', help="""define the window size (bp, default: 50)""", type=int, default=50)
     ps.add_argument('-step', '-step_size', help="""define the step size (bp, default: 5)""", type=int, default=5)
     ps.add_argument('-bench', '-test', help="""bench mode, only process the first 10 genes for testing purpose""", action='store_true')
-    ps.add_argument('-reuse', help="""reuse the previous pre-count result for the bed files, will save time if the bed files have ben already processed by this script""", action='store_true')
+    ps.add_argument('-force', help="""ignore the previous pre-count result for the bed files""", action='store_true')
     # ps.add_argument('-overwrite', help="""if the mapped reads count file already exists, overwrite it, default is reuse the old ones""", action='store_true')
     ps.add_argument('-verbose', '-v', help="""verbose mode, print more information""", action='store_true')
     # ps.add_argument('-testfunc', help="""test the new functions,debug mode""", action='store_true')
@@ -301,6 +301,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     fail_to_retrieve_seq = 0
     pwout = analysis.out_dir
     window_size, step_size = analysis.config['window_size'], analysis.config['step']
+    pw_bed = args.pw_bed
     dummy_seq = 'ATCG'
     n = 0
     prev = [time.time(), 0] # time, get_mapped_reads_count count
@@ -321,7 +322,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     # genes_with_N = set()
     
     for fn_lb, fn_bed in fls:
-        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pwout, bin_size, reuse=reuse_pre_count)
+        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pw_bed, bin_size, reuse=reuse_pre_count)
         prev_peak = {}
         
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
@@ -418,7 +419,7 @@ def main(args):
         'window': 50,
         'step': 5,
         'bench': False,
-        'reuse': False,
+        'ignore': False,
     }
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
@@ -530,7 +531,7 @@ def main(args):
     sam_order = [_[0] for _ in fls]
     n_gene_cols = analysis.n_gene_cols
     
-    reuse_pre_count = vars(args).get('reuse', False) # modify here
+    reuse_pre_count = not vars(args).get('ignore', False) # modify here
     if not analysis.skip_get_mapped_reads:
         logger.info(f'Getting pp_gb count')
         pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
@@ -684,8 +685,11 @@ if __name__ == "__main__":
                 h.setLevel('DEBUG')
                 break
         logger.debug(f'Verbose mode is on')
-    
-    args.pwout = os.path.realpath(args.pwout)
+    pwout_raw = os.path.realpath(args.pwout)
+    args.pwout = pwout_raw
+    args.pw_bed = f'{pwout_raw}/bed'
+    if not os.path.exists(args.pw_bed):
+        os.makedirs(args.pw_bed, exist_ok=True)
     args.organism = args.organism
 
     if args.in1 is not None:
@@ -728,9 +732,8 @@ if __name__ == "__main__":
                     update_dict = {}
                     update_dict['in1'] = group_info[control]
                     update_dict['in2'] = group_info[case] or None
-                    out_dir = args.pwout or os.getcwd()
                     comp_str = control if case == 'null' else f'{case}_vs_{control}'
-                    out_dir = os.path.join(out_dir, comp_str)
+                    out_dir = os.path.join(pwout_raw, comp_str)
                     update_dict['pwout'] = out_dir
                     
                     args_new = get_new_args(args, update_dict)

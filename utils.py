@@ -1721,7 +1721,7 @@ def get_lb(fn):
 
 
 
-def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size, reuse=False):
+def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
     """
     fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
     process the bed file, and get the count of the read end regarding strand.
@@ -1733,13 +1733,12 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pwout, bin_size, reuse=False):
     return chr_map is used to make the chr pattern in the gtf file and input bed file consistant, esp. when running bedtools
 
     """
-    fn_count_bin = f'{pwout}/intermediate/bed/{fn_lb}.count.bin_of_{bin_size}.pkl'
-    fn_count_per_base = f'{pwout}/intermediate/bed/{fn_lb}.count.per_base.pkl'
-    fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
+    fn_count_bin = f'{pw_bed}/{fn_lb}.count.bin_of_{bin_size}.pkl'
+    fn_count_per_base = f'{pw_bed}/{fn_lb}.count.per_base.pkl'
+    fn_chr_map = f'{pw_bed}/{fn_lb}.chr_map.pkl'
     
     if reuse and os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
         logger.info(f'Loading pre-counting data...')
-    
         with open(fn_count_per_base, 'rb') as f:
             count_per_base = pickle.load(f)
         with open(fn_count_bin, 'rb') as f:

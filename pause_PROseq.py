@@ -140,6 +140,7 @@ class Analysis:
         # folders
         self.bin_dir = os.path.dirname(os.path.realpath(__file__))
         self.out_dir = args.pwout or os.getcwd()
+        self.pwout_raw = args.pwout_raw
         self.inter_dir = os.path.join(self.out_dir, 'intermediate')
         self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
@@ -158,11 +159,11 @@ class Analysis:
             self.status = 1
 
         # input files
-        in1 = process_input(self.out_dir, args.in1) # return = fn_lb, fn_bed
+        in1 = process_input(self.pwout_raw, args.in1) # return = fn_lb, fn_bed
         if in1 is None:
             logger.error("Invalid input files provided for condition1")
             self.status = 1
-        in2 = process_input(self.out_dir, args.in2)
+        in2 = process_input(self.pwout_raw, args.in2)
         self.control_bed = in1
         self.case_bed = in2
 
@@ -675,6 +676,8 @@ def get_new_args(args, update_dict):
 
     
 if __name__ == "__main__":
+    logger.debug(vars(args))
+    
     verbose = args.verbose
     if verbose:
         # set the "console" file handler to debug level
@@ -687,6 +690,7 @@ if __name__ == "__main__":
         logger.debug(f'Verbose mode is on')
     pwout_raw = os.path.realpath(args.pwout)
     args.pwout = pwout_raw
+    args.pwout_raw = pwout_raw
     args.pw_bed = f'{pwout_raw}/bed'
     if not os.path.exists(args.pw_bed):
         os.makedirs(args.pw_bed, exist_ok=True)

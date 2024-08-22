@@ -273,7 +273,7 @@ def get_ref(organism, fa_in=None, gtf=None):
             if os.path.exists(f'{fn}.gz'):
                 ref[k] = f'{fn}.gz'
             else:
-                not_found.append(fn)
+                not_found.append(f'{k}: {fn}')
                 err = 1
     if err:
         logger.error(f"the following files are not found:")
@@ -1797,7 +1797,7 @@ def build_bin_dict(bin10, pwout, fn_lb, bin_size):
     return res
 
 
-def process_input(pwout, fls):
+def process_input(pwout_raw, fls):
     """
     process input files, convert bam to bed if needed, and build the index for bed files
     return a list of [fn_bed, idx_bed, fn_lb]
@@ -1811,8 +1811,8 @@ def process_input(pwout, fls):
     for fn in fls:
         fn_lb = get_lb(fn)
         gz_suffix = '.gz' if fn.endswith('.gz') else ''
-        fn_out_bed = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed'
-        fn_out_bed_gz = f'{pwout}/intermediate/bed/{fn_lb}.sorted.bed{gz_suffix}'
+        fn_out_bed = f'{pwout_raw}/bed/{fn_lb}.sorted.bed'
+        fn_out_bed_gz = f'{pwout_raw}/bed/{fn_lb}.sorted.bed{gz_suffix}'
 
         if os.path.exists(fn_out_bed) and os.path.getsize(fn_out_bed) > 10:
             res.append([fn_lb, fn_out_bed])

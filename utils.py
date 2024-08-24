@@ -122,7 +122,7 @@ logger = getlogger('NRSA.run.log', 'NRSA')
 
 bases_set = set('ATGCatgc')
 def refine_chr(chr_):
-    chr_ = chr_.lower()
+    chr_ = chr_.strip().lower()
     for _ in ['chromosome', 'chrom', 'chr']:
         chr_ = chr_.replace(_, '')
     return {'23': 'x', '24': 'y', '25': 'mt', 'm': 'mt'}.get(chr_) or chr_
@@ -168,7 +168,6 @@ def build_idx_for_fa(fn_fa):
                 break
             if i[0] == '>':
                 chr_ = refine_chr(i[1:-1].lower())
-
                 s_pos = f.tell()
                 res[chr_] = [s_pos, 0]
             elif chr_:
@@ -670,10 +669,144 @@ def draw_heatmap_pindex(n_gene_cols, pwout):
 
     plt.savefig(f'{pwout}/known_gene/pindex_change.pdf', bbox_inches='tight')
     plt.close()
+def get_line_count(fn):
+    n = 0
+    with gzip.open(fn) if fn.endswith('.gz') else open(fn) as f:
+        for i in f:
+            n += 1
+    return n
 
+def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
+    s = time.time()
+    cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
+    retcode = run_shell(cmd)
+    if retcode:
+        logger.error(f'failed to run bedtools coverage for {fn_lb}')
+        return 1
+    # process the coverage file
+    # chr1	323932	323952	1   10
+    logger.debug(f'bedtools coverage for {fn_lb}, done, time used = {dur:.2f}s')
+    count = {}
+    with open(fn_coverage) as f:
+        for i in f:
+            line = i[:-1].split('\t')
+            bin_sn, ict = line[3], line[4]
+            count.setdefault(bin_sn, 0)
+            count[bin_sn] += int(ict)
+    return count
 
+def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin_size=20, signal_type='p'):
+    # fn_enhancer_center #enhancer central position file, the output of eRNA.pl (Enhancer_centralposition.txt); required, enhancer central position file, the output of eRNA.pl (Enhancer_center.txt), or the file of chromation location of interest (should contains at least two columns separated by tab or space, e.g "chr11	83078317")
+    # example line = chr1	565340	565340	+, no header
+    
+    # my $distance = 2000;	#up and down relative distance from peak centre;
+    # my $bin_size=20; #bin size for smoothing;
+    # my @case_bed;	#read alignment files in bed/bam format (case);
+    # my @control_bed;	#read alignment files in bed/bam format (control);
+    # my $signal="p"; The signal type (-s) should be either 'p' or 'o', p - signal for PROseq was input in pause_PROseq.pl; o - signal for other data such as histone modification (default: p)
+    fls_case = fls_case or []
+    if signal_type not in {'p', 'o'}:
+        logger.error(f'invalid signal type: {signal_type}, valid = "p" or "o"')
+        return 1
+    pwout = f'{pwprj}/eRNA'
+    pwinter = f'{pwout}/intermediate'
+    fn_padding = f'{fn_enhancer_center}.padding.tmp'
+    fn_split_bin_bed = f'{fn_enhancer_center}.split_regions.bed'
 
-def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, region_size=5000, bin_size=200, outname='heatmap'):
+    n_valid_sites = 0
+    n_bad_line = 0 # the line which 2nd column is not numeric
+    min_dist_before = distance + bin_size/2
+    nfactor = {}  # key = fn_lb, v = total lines in the bed file, the line_count should be calculated during the pre-counting step
+    res = {}
+    half_bin_size = int(bin_size / 2)
+    
+    fn_bed = fls_ctrl[0][1]
+    fn_chr_map = fn_bed.replace('.sorted.bed', '.chr_map.pkl')
+    with open(fn_chr_map, 'rb') as f:
+        chr_map = pickle.load(f)
+
+    with open(fn_enhancer_center) as f, open(fn_padding, 'w') as o:
+        for i in f:
+            try:
+                line = i[:-1].split('\t')
+                pos = int(line[1])
+                if pos > min_dist_before:
+                    n_valid_sites += 1
+                    chr_ = chr_map.get(line[0], line[0])
+                    left_boundary = pos_int - region_size - half_bin_size
+                    right_boundary = pos_int + region_size + half_bin_size
+                    print(f'{chr_}\t{left_boundary}\t{right_boundary}', file=o)
+            except:
+                n_bad_line += 1
+    if n_bad_line:
+        logger.warning(f'{n_bad_line} lines in {fn_enhancer_center} are invalid, 2nd column is not numeric')
+
+    # get the line count for each bed file
+    for fn_lb, fn_bed in fls_ctrl + fls_case:
+        fn_line_count = fn_bed.replace('.sorted.bed', '.line_count.txt')
+        if os.path.exists(fn_line_count):
+            with open(fn_line_count) as f:
+                nfactor[fn_lb] = int(f.readline())
+        else:
+            line_count = get_line_count(fn)
+            nfactor[fn_lb] = line_count
+            with open(fn_line_count, 'w') as o:
+                o.write(str(line_count))
+
+    # build the regions around the enhancer center for plot
+    # no region name, the final output from makewindows is like
+    # chr1	20	30	3  the 4th column is the region number
+    def makewindows(fn_lb, fn_tss_padding, bin_size, chr_map):
+        # rewrite the bedtools makewindows, because the original one does not contain the strand information
+        fno = f'{pwout}/intermediate/{fn_lb}.split_regions.bed'
+        with open(fn_tss_padding) as f, open(fno, 'w') as o:
+            for i in f:
+                chr_, s, e, strand = i[:-1].split('\t')
+                bin_sn = 0
+                chr_orig = chr_map.get(chr_, chr_)
+                for pos in range(s, e, bin_size):
+                    bin_sn += 1
+                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{bin_sn}\t{strand}', file=o)
+        return fno
+    
+    # build the new tss for the first file, and use it  for the rest
+    fn_lb = fls_ctrl[0][0]
+    fn_chr_map = f'{pw_bed}/{fn_lb}.chr_map.pkl'
+    with open(fn_chr_map, 'rb') as f:
+        chr_map = pickle.load(f)
+    fn_split_bin_bed = makewindows(fn_lb, fn_padding, bin_size, chr_map)
+    
+
+    # get the signal results
+    for fn_lb, fn_bed in fls_ctrl + fls_case:
+        fn_coverage = f'{pwinter}/{fn_lb}.signal.coverage.txt'
+        res[fn_lb] = calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage)
+    
+    # save nfactor for type = 'o'
+    if signal_type == 'o':
+        with open(f'{pwinter}/nf_o.txt') as o:
+            print('sample\tnfactor', file=o)
+            for fn_lb, line_count in nfactor.items():
+                print(f'{fn_lb}\t{10_000_000/line_count}', file=o)
+
+    # export the signal results
+    fn_pro_signal = f'{pwinter}/PROseq_signal.txt'
+    with open(fn_pro_signal, 'w') as o:
+        print('position\t' + '\t'.join([fn_lb for fn_lb, _ in fls_ctrl + fls_case]), file=o)
+        bin_sn = 0
+        for bin_pos in range(-distance, distance + 1, bin_size):
+            bin_sn += 1
+            row = [str(bin_pos)]
+            for fn_lb, _ in fls_ctrl + fls_case:
+                row.append(f'{res[fn_lb][bin_sn]/n_valid_sites:.4f}')
+            print('\t'.join(row), file=o)
+    
+
+    # plot the signal
+    # signal = 1 if signal_type == 'o' else 0
+    # file=fn_pro_signal  outdir=\"$inter_dir\" sample=\"$samplename_str\" pname=\"$name\" rep1=$rep1 rep2=$rep2 signal=1 \' $cmd_file
+
+def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_tss, region_size=5000, bin_size=200, outname='heatmap'):
     """
     draw heatmap for pp change
     fls_ctrl, fls_case, foramt is like [fn_lb, fn_bed]
@@ -687,7 +820,6 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, regio
     ppchange = {}
     fn_pp_change = f'{pwout}/known_gene/pp_change.txt'
     fn_out_pdf = f'{pwout}/known_gene/heatmap.pdf'
-    fn_split_bin_bed = f'{pwout}/intermediate/tss_split_regions.bed'
     # fn_data_bed = f'{pwout}/intermediate/data_bed.tmp'
     fn_tss_padding = f'{pwout}/intermediate/infile_bed.tmp' # expand the fn_tss with upstream and downstream region by region_size
     time_bedtools_coverage = 0
@@ -724,10 +856,10 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, regio
     # tss file
     # chr1	11874	11874	NR_046018.2	+
     # tss_res = []
-    tss_with_padding = []
+    tss_with_padding_n = 0
     strand_info = {}
     half_bin_size = int(bin_size / 2)
-    with open(fn_tss) as f:
+    with open(fn_tss) as f, open(fn_tss_padding, 'w') as o:
         for i in f:
             line = i.strip().split('\t')
             chr_, pos, transcript_id, strand = [line[_] for _ in [0, 1, 3, 4]]
@@ -741,48 +873,36 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, regio
                 left_boundary = pos_int - region_size - half_bin_size
                 right_boundary = pos_int + region_size + half_bin_size
                 row_tmp = [chr_, left_boundary, right_boundary, transcript_id, strand]
-
+                print('\t'.join(map(str, row_tmp)), file=o)
                 # tss_res.append(row)
-                tss_with_padding.append(row_tmp)
-    if len(tss_with_padding) == 0:
+                tss_with_padding_n += 1
+    if tss_with_padding_n == 0:
         logger.error(f'no gene in tss file match with the gene list, please check if the transcript names in the GTF file match with the TSS file')
         return 1
     
-    # write tss_with_beding bed and data_bed
-    with open(fn_tss_padding, 'w') as o:
-        for i in tss_with_padding:
-            o.write('\t'.join(map(str, i)) + '\n')
-    # with open(fn_data_bed, 'w') as o:
-    #     for i in tss_res:
-    #         o.write('\t'.join(map(str, i)) + '\n')
-
-    # use bedtools to split the fn_tss_padding, srcwinnum, use the orignal region_label and bin number
-    # after running, the last column is like  origlb_1, origlb_2, ....  _1, and _2 are the bin number
-    
-    cmd = f'bedtools makewindows -b {fn_tss_padding} -n {bin_number} -i srcwinnum |bedtools sort -i - > {fn_split_bin_bed}'
-    logger.debug('bedtools makewindows done')
-    retcode = run_shell(cmd, echo=True)
-    if retcode:  # fail to makewindow
-        logger.error(f'failed to run bedtools makewindows')
-        return 1
-    def build_split_region_bed(fn_lb, chr_map):
-        fno = f'{pwout}/intermediate/{fn_lb}.split_region.tmp'
-        with open(fn_split_bin_bed) as f, open(fno, 'w') as o:
+    def makewindows(fn_lb, fn_tss_padding, bin_size, chr_map):
+        # rewrite the bedtools makewindows, because the original one does not contain the strand information
+        fno = f'{pwout}/intermediate/{fn_lb}.split_regions.bed'
+        with open(fn_tss_padding) as f, open(fno, 'w') as o:
             for i in f:
-                chr_, rest = i.split('\t', 1)
+                chr_, s, e, ts, strand = i[:-1].split('\t')
+                s, e = int(s), int(e)
+                bin_sn = 0
                 chr_orig = chr_map.get(chr_, chr_)
-                o.write(f'{chr_orig}\t{rest}')
+                for pos in range(s, e, bin_size):
+                    bin_sn += 1
+                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t{strand}', file=o)
+        # sort bed
+        os.system('bedtools sort -i {fno} > {fno}.sorted && mv {fno}.sorted {fno}')
+
         return fno
-    
     
     # build the new tss for the first file, and use it  for the rest
     fn_lb = fls_ctrl[0][0]
-    fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
+    fn_chr_map = f'{pw_bed}/{fn_lb}.chr_map.pkl'
     with open(fn_chr_map, 'rb') as f:
         chr_map = pickle.load(f)
-    split_bed_per_file = build_split_region_bed(fn_lb, chr_map)
-    
-
+    split_bed_per_file = makewindows(fn_lb, fn_tss_padding, bin_size, chr_map)
     
     # load the normalization factors (nf.txt)
     fn_nf = f'{pwout}/intermediate/nf.txt'
@@ -803,11 +923,6 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, fls_ctrl, fls_case, fn_tss, regio
         n_sam_condition = len(fls)
         for fn_lb, fn_bed  in fls:
             norm_factor = factors_dict[fn_lb]
-            
-            # fn_chr_map = f'{pwout}/intermediate/bed/{fn_lb}.chr_map.pkl'
-            # with open(fn_chr_map, 'rb') as f:
-            #     chr_map = pickle.load(f)
-            # split_bed_per_file = build_split_region_bed(fn_lb, chr_map)
             
             fn_coverage_tmp = f'{pwout}/intermediate/{fn_lb}.coverage_count.tmp'
             # do we need to calculate the coverage by strand??? 
@@ -1186,13 +1301,14 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         with HiddenPrints():
             res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
             res_df_full = pd.concat([res_df, data_drop_gb.iloc[:, idx_gene_cols]])
+            
             res_df_full.to_csv(f'{out_dir}/known_gene/gb_change.txt', sep='\t', index=False, na_rep='NA')
             
             # pp change
             try:
                 res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
             except:
-                fn_deseq2_input = '/data/cqs/chenh19/project/nrsa_v2/test/G401_584_vs_G401_DMSO/intermediate/bed/deseq2.pkl'
+                fn_deseq2_input = f'{outdir}/intermediate/deseq2.pkl'
                 
                 logger.error(f'fail to run deseq2, dumping the arguments to {fn_deseq2_input}')
                 with open(fn_deseq2_input, 'wb') as o:
@@ -1209,7 +1325,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         # control only, multiple ctrol samples
         _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True)
 
-    norm_factors = size_factors / 1
+    norm_factors = 1 / size_factors
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
     nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
@@ -1399,13 +1515,14 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
     """
     fno_prefix, default is empty for known genes, longeRNA- for longeRNA
     adapted from Rscript change_pindex.R
-    input = count_pp_gb.txt  Transcript, Gene, chr, start, end, strand, (ppc_sam1 - ppc_sum2 ...), (gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ...)
+    input = intermediate/ count_pp_gb.txt or longeRNA-count_pp_gb.txt  Transcript, Gene, chr, start, end, strand, (ppc_sam1 - ppc_sum2 ...), (gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ...)
     
     The transcripts were not collapsed to gene level
     """
-    
+    # for longeRNA, the count_pp_gb header is like
+    # long-eRNA	ppc_ ...., so there is no Transcript, gene, chr, start, end, and strand
     # compared with previous results, matches
-    if fno_prefix not in ['', 'longeRNA-']:
+    if fno_prefix not in {'', 'longeRNA-'}:
         logger.error(f'invalid file prefix for pindex_change, should be empty or "longeRNA-", input="{fno_prefix}"')
         return 1
     if not rep2:
@@ -1418,6 +1535,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         # the data does not contains the chr, start, end, strand columns, and there is no Gene column
         # no filtering needed
         ana_type = 'eRNA'
+        n_cols_prev = n_gene_cols = 1
     else:
         ana_type = 'Known genes'
         n_cols_prev = n_gene_cols + 4
@@ -1736,6 +1854,7 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
     fn_count_bin = f'{pw_bed}/{fn_lb}.count.bin_of_{bin_size}.pkl'
     fn_count_per_base = f'{pw_bed}/{fn_lb}.count.per_base.pkl'
     fn_chr_map = f'{pw_bed}/{fn_lb}.chr_map.pkl'
+    fn_n_lines = f'{pw_bed}/{fn_lb}.line_count.txt'
     
     if reuse and os.path.exists(fn_count_per_base) and os.path.getsize(fn_count_per_base) > 10:
         logger.info(f'Loading pre-counting data...')
@@ -1749,6 +1868,7 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
     count_bin = {'bin_size': bin_size}
     count_per_base = {}
     logger.info(f'Pre-counting for {fn_lb}')
+    n_lines = 0
     with gzip.open(fn_out_bed, 'rt') if fn_out_bed.endswith('.gz') else open(fn_out_bed, 'r') as fh_bed:
         for i in fh_bed:
             # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
@@ -1761,6 +1881,7 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
 
             count_per_base.setdefault(chr_, {}).setdefault(read_end, [0, 0])  # for each read end, the count of + and - strand
             count_per_base[chr_][read_end][strand_idx] += 1
+            n_lines += 1
 
         # refine the chr_
         chr_map = {refine_chr(k): k for k in count_bin}
@@ -1777,24 +1898,11 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
         pickle.dump(chr_map, f)
     logger.debug('dump to pickle done.')
     
+    with open(fn_n_lines, 'w') as f:
+        f.write(f'{n_lines}\n')
     
     
     return count_per_base, count_bin
-
-def build_bin_dict(bin10, pwout, fn_lb, bin_size):
-   # based on the result of bin=10, build bin = 50, 100 dict
-    res = {'bin_size': bin_size}
-    for chr_, v1 in bin10.items():
-        if chr_ == 'bin_size': continue
-        for pos, (p, m) in v1.items():
-            pos = pos * 10 // bin_size
-            res[chr_].setdefault(pos, [0, 0])
-            res[chr_][pos][0] += p
-            res[chr_][pos][1] += m
-    print('dumping')
-    with open(f'{pwout}/intermediate/bed/{fn_lb}.bin_of_{bin_size}.pkl', 'wb') as o:
-        pickle.dump(res, o)
-    return res
 
 
 def process_input(pwout_raw, fls):

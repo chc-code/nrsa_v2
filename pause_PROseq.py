@@ -8,7 +8,7 @@ import sys, os, re
 import pickle
 import json
 from types import SimpleNamespace
-
+import traceback
 
 def getargs():
     import argparse as arg
@@ -144,7 +144,6 @@ class Analysis:
         self.inter_dir = os.path.join(self.out_dir, 'intermediate')
         self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
-        # self.overwrite_intermediate = args.overwrite
         
         for lb, d in zip(['Output', 'Intermediate', 'Known Genes', 'bed file folder'], [self.out_dir, self.inter_dir, self.known_gene_dir, f'{self.inter_dir}/bed']):
             if not os.path.exists(d):
@@ -321,13 +320,35 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     # count_pool = {}
     # prev_peak_pool = {}
     # genes_with_N = set()
-    
+    n_ts_init = len(ts_list)
     for fn_lb, fn_bed in fls:
         count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pw_bed, bin_size, reuse=reuse_pre_count)
         prev_peak = {}
         
+        # exclude the ts that the chr not in the bed files
+        valid_chr = set(count_per_base)
+        chr_excluded = {}
+        ts_excluded = 0
+        ts_list_copy = ts_list.copy()
+        
+        for ts, v in gtf_info.items():
+            ts_chr = v['chr']
+            if ts_chr not in valid_chr:
+                ts_excluded += 1
+                ts_list_copy.remove(ts)
+                if ts in pp_str:
+                    del pp_str[ts]
+                if ts in gb_str:
+                    del gb_str[ts]
+                chr_excluded.setdefault(ts_chr, 0)
+                chr_excluded[ts_chr] += 1
+        if ts_excluded > 0:
+            n_ts_now = len(ts_list_copy)
+            logger.info(f'{ts_excluded} transcripts in GTF file excluded due to chromosome not exist in bed file')
+            logger.debug(f'init ts list = {n_ts_init}, current = {n_ts_now}, drop = {n_ts_init - n_ts_now}, exp drop = {ts_excluded}')
+            logger.debug(f'excluded chr = {chr_excluded}')
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
-        for transcript_id in ts_list:
+        for transcript_id in ts_list_copy:
             gene_info = gtf_info[transcript_id]
             chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
 
@@ -405,7 +426,7 @@ def main(args):
 
     # check if the attributes are present
     defined_attrs = vars(args)
-    required_attrs = {'in1', 'pwout', 'organism'}
+    required_attrs = {'in1', 'pwout', 'organism', 'pw_bed'}
     
     optional_attrs = {
         'in2': None,
@@ -422,6 +443,7 @@ def main(args):
         'bench': False,
         'ignore': False,
     }
+    pw_bed = args.pw_bed
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
     for attr in exist:
@@ -653,7 +675,7 @@ def main(args):
         logger.info(f'plotting heatmap for pp_change')
         # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
 
-        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap')
+        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap')
 
         # modify here
         # logger.info('debug exit')
@@ -689,6 +711,7 @@ if __name__ == "__main__":
                 break
         logger.debug(f'Verbose mode is on')
     pwout_raw = os.path.realpath(args.pwout)
+    logger.debug(f'pw_out_raw = {pwout_raw}')
     args.pwout = pwout_raw
     args.pwout_raw = pwout_raw
     args.pw_bed = f'{pwout_raw}/bed'
@@ -698,7 +721,13 @@ if __name__ == "__main__":
 
     if args.in1 is not None:
         # logger.info('Processing input files')
-        main(args)
+        try:
+            main(args)
+        except:
+            e = traceback.format_exc()
+            logger.error(f'Error found during running, please check the log file for more information')
+            logger.debug(e)
+            sys.exit(1)
     elif args.design_table is not None:
         group_info = {}  # key = group name, v = file list
         comparison = []
@@ -743,8 +772,15 @@ if __name__ == "__main__":
                     args_new = get_new_args(args, update_dict)
                     # logger.info(vars(args_new))
                     logger.info(f'Processing {comp_str}')
-                    main(args_new)
+                    try:
+                        main(args_new)
+                    except:
+                        e = traceback.format_exc()
+                        logger.error(f'Error found during running, please check the log file for more information')
+                        logger.debug(e)
+                        sys.exit(1)
     else:
         logger.error("No input files provided, either use -in1 / in2 or provide a design table")
         sys.exit(1)
 
+    logger.debug('script finished without any error')

@@ -852,7 +852,6 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
             if logfc != 'NA':
                 ppchange[transcript_id] = logfc
 
-
     # tss file
     # chr1	11874	11874	NR_046018.2	+
     # tss_res = []
@@ -872,6 +871,8 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
 
                 left_boundary = pos_int - region_size - half_bin_size
                 right_boundary = pos_int + region_size + half_bin_size
+                if left_boundary < 0:
+                    continue
                 row_tmp = [chr_, left_boundary, right_boundary, transcript_id, strand]
                 print('\t'.join(map(str, row_tmp)), file=o)
                 # tss_res.append(row)
@@ -892,8 +893,9 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                 for pos in range(s, e, bin_size):
                     bin_sn += 1
                     print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t{strand}', file=o)
-        # sort bed
-        os.system('bedtools sort -i {fno} > {fno}.sorted && mv {fno}.sorted {fno}')
+        # logger.info('sort split region bed 2')
+        fntmp = f'{fno}.tmp'
+        os.system(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
 
         return fno
     
@@ -1753,8 +1755,12 @@ def process_gtf(fn_gtf, pwout):
             res_raw.setdefault(gene_name, {}).setdefault(transcript_id, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
             
             ires = res_raw[gene_name][transcript_id]
+            
+            # deal with the case when the same transcript-ID with different chr or strand
             if chr_ != ires['chr'] or strand != ires['strand']:
-                continue
+                transcript_id_new = f'{transcript_id}_{chr_}_{strand}'
+                res_raw.setdefault(gene_name, {}).setdefault(transcript_id_new, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
+                ires = res_raw[gene_name][transcript_id_new]
 
             if start < ires['start']:
                 ires['start'] = start

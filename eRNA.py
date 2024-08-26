@@ -121,201 +121,104 @@ def getarg():
     args = ps.parse_args()
     return args
 
-def check_args(args):
-    code = 0
-    overlap_frac = args.overlap_frac
-    control_bed = args.in1
-    case_bed = args.in2
-    genome = args.genome
-    direction = args.dir
-    prior = args.pri
-    peakfile = args.peak
-    linkage = args.lk
-    fdr = args.fdr
-    weight = args.wt
-
-    # reference files
-    # my $gtf = $dir."\/hg19\/RefSeq-hg19-exon-formatted.gtf";		#reference genes in gtf format;
-    # my $fantom=$dir."\/annotation\/human_permissive_enhancers_phase_1_and_2.bed";
-    # my $association=$dir."\/annotation\/human_enhancer_tss_associations.bed";
-    # my $tss=$dir."\/hg19\/RefSeq-hg19-tss.txt";
-    # my $tss_tts=$dir."\/hg19\/RefSeq-hg19-tss-tts.txt";
-    # my $fdgenome=$dir."\/annotation\/4DGenome-hg19.txt";
-
-
-    # check intermediate folder
-    pw_intermediate = os.path.join(pw_data, 'intermediate')
-    if not os.path.exists(pw_intermediate):
-        logger.error(f"Not find the results of pause_PROseq.pl, please check the work directory.")
-        return 1, None
-
-
-    # check HOMER_tag
-    pw_homer = os.path.join(pw_intermediate, 'HOMER_tag')
-
-    # 1) overlap_frac
-
-    if overlap_frac <= 0 or overlap_frac > 1:
-        logger.error("Overlap for calling annotated gene should be less than 0-1")
-        code = 1
-    # 4) bed files checking
-    if control_bed:
-        cond1 = control_bed
-        for i in range(len(cond1)):
-            if not os.path.exists(cond1[i]):
-                logger.error(f"Input experiment file in bed/bam format (-in1) '{cond1[i]}' does not exist\n")
-
-            temp1 = cond1[i].rindex(".")
-            temp2 = cond1[i][temp1+1:]
-            if temp2 not in ["bed", "bam"]:
-                logger.error(f"Please input experiment file '{cond1[i]}' in bed or bam format!\n")
-                code = 1
-                
-            cond1[i] = os.path.abspath(cond1[i])
-
-    else:
-        logger.error("Input experiment files in bed/bam format (-in1) has not been defined yet\n")
-        code = 1
-
-    if case_bed:
-        cond2 = case_bed
-        for i in range(len(cond2)):
-            if not os.path.exists(cond2[i]):
-                logger.error(f"Input experiment file in bed/bam format (-in2) '{cond2[i]}' does not exist\n")
-                code = 1
-            temp1 = cond2[i].rindex(".")
-            temp2 = cond2[i][temp1+1:]
-            if temp2 not in ["bed", "bam"]:
-                logger.error(f"Please input experiment file '{cond2[i]}' in bed or bam format!\n")
-                code = 1
-            cond2[i] = os.path.abspath(cond2[i])
-
-    # 5) normalize factors checking
-
-    # 6) check genome
-    valid_genomes = ["hg19", "mm10", "dm3", "ce10", "danRer10", "hg38", "dm6"]
-    if genome not in valid_genomes:
-        logger.error("Please set genome (-m) as hg19, hg38, mm10, dm3, dm6, ce10, or danRer10!\n")
-        code = 1
-
-    # get the path of the reference files
-    ref_files = {}
-    pw_ref = os.path.join(pw_data, 'ref')
-    pw_fa = os.path.join(pw_data, 'fa')
-    pw_annotation = os.path.join(pw_data, 'annotation')
-    
-    for igenome in valid_genomes:
-        ref_files[igenome] = {}
-        ref_files[igenome]["gtf"] = os.path.join(pw_ref, igenome, f"RefSeq-{igenome}-exon-formatted.gtf")
-        ref_files[igenome]["tss"] = os.path.join(pw_ref, igenome, f"RefSeq-{igenome}-tss.txt")
-        ref_files[igenome]["tss_tts"] = os.path.join(pw_ref, igenome, f"RefSeq-{igenome}-tss-tts.txt")
-        
-        ref_files[igenome]["genome_seq"] = os.path.join(pw_fa, igenome, f"{igenome}.fa")
-
-        ref_files[igenome]["fdgenome"] = os.path.join(pw_annotation,  f"4DGenome-{igenome}.txt")
-        ref_files[igenome]["fantom"] = os.path.join(pw_annotation, "human_permissive_enhancers_phase_1_and_2.bed")
-        ref_files[igenome]["association"] = os.path.join(pw_annotation, "human_enhancer_tss_associations.bed")
-
-        # validite file existence
-        for key, value in ref_files[genome].items():
-            if not os.path.exists(value):
-                if pw_annotation not in value:
-                    logger.warning(f"{igenome} - {key}: '{value}' does not exist\n")
-                    ref_files[igenome][key] = None
-                else:
-                    logger.error(f"{igenome} - {key}: '{value}' does not exist\n")
-                    code = 1
-
-    # 7) peak file checking
-    if prior == 1:
-        if peakfile is None:
-            logger.error("Peak file for sorting enhancers (-peak) has not been defined yet\n")
-            code = 1
-        else:
-            if not os.path.exists(peakfile):
-                logger.error(f"Peak file (-peak) '{peakfile}' does not exist\n")
-                code = 1
-            else:
-                peakfile = os.path.abspath(peakfile)
-
-    # 8) prioritize or not checking
-    if prior not in [0, 1]:
-        logger.error("(-pri) should be 0 (do not prioritize) or 1 (do prioritize)!\n")
-        code = 1
-
-    # 9) direction checking
-    if direction not in [1, -1, 0]:
-        logger.error("(-dir) should be 1 (consistent), -1 (inconsistent), or 0 (don't care)!\n")
-        code = 1
-
-    # 10) weight checking
-    if prior == 1:
-        if not (0 <= weight <= 1):
-            logger.error("Weight (-wt) should be in [0, 1]!\n")
-            code = 1
-
-    # 11) cutoff of fdr checking
-    if prior == 1:
-        if not (0 <= fdr <= 1):
-            logger.error("Cutoff of FDR (-cf) should be in [0, 1]!\n")
-            code = 1
-
-    # 12) linkage checking
-    if prior == 1:
-        if linkage not in ["pp", "gb", "pindex"]:
-            logger.error("Type of linkage (-lk) should be pp, gb, or pindex!\n")
-            code = 1
-
-    return code, ref_files
-
-
-def gtf_compare(gtf_in, gtf_ref, overlap_frac):
-    pass
-
-def region_compare(other_gene, out_txt):
-    pass
-
-def central(other_region, lcut, target_type):
-    # lcut: cutoff of 5' distance;
-    # target_type can be eRNA or long_eRNA
-    
-    fno_enhancer = f'{out_dir}/{target_type}/Enhancer.txt'
-    enhancer_found = 0
-    # build the enhancer region content here
-    # sort the enhancer region
-    
-    
-    if enhancer_found == 0:
-        logger.error("No enhancer region was detected! Program exits!")
-        return 1, None
-    
-    pass
-findEnhancer = central
 
 def main():
-    overlap_frac = args.overlap_frac # percentage of overlap for calling annotated gene, default 0.2
-    genome = args.genome
-    lcut = args.cutoff #cutoff of 5' distance;
-    d_e = args.distance #distance between two eRNAs for merging(bp, default: 500)
-    l_erna = args.le #length cutoff for long-eRNA identification
-    out_dir = args.w # work directory, should be the same of pause_PROseq.pl's output/work directory
-    wd = args.wd #distance within which associate active genes of enhancer (bp, default: 50000)
-
-    toggle_filter = args.filter  # whether to filter for enhancers: 0 (not filter) or 1 (filter)
-    toggle_prior = args.pri
+    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare
+    from types import SimpleNamespace
     
-    filter_tss = args.dtss
-    filter_tts = args.dtts
-    wd = args.wd  #target active gene within distance
-    peakfile = args.peak
-    direction = args.dir
-    weight = args.wt
-    fdr = args.fdr
-    linkage = args.lk; #pp, gb, or pindex
+    
+    args = getarg()
+    args_d = vars(args)
+    # in1, in2, pwout, organism, overlap_frac, cutoff, le, filter(0,1), 
+    # dtss, dtts, 
+    # wd (distance within active gene), 
+    # pri(0,1), peak (file), 
+    # lk (pp, gb, pindex), dir (1, -1, 0), wt (weight), fdr (cutoff)
+    analysis = SimpleNamespace()
+    analysis.pwout = pwout = args.pwout
+    analysis.pwout_raw = args_d.get('pwout_raw', pwout)
 
-    dependency_exist = check_dependency()
-    if not dependency_exist:
-        return 1
+    ref_fls = get_ref_erna(args.organism)
+    if ref_fls is None:
+        logger.error("Error encountered while retrieving reference files")
+        status = 1
+        return
+    analysis.ref_fls = ref_fls
+
+
+    folders = ['eRNA', 'intermediate']
+    for ipw in folders:
+        if not os.path.exists(os.path.join(pwout, ipw)):
+            os.makedirs(os.path.join(pwout, ipw))
+            
+    dependency_status = check_dependency()
+    if dependency_status:
+        logger.error("Dependency check failed")
+        sys.exit(1)
+    analysis.pw_homer = f'{pwout}/intermediate/HOMER_tag'
+
+    in1 = process_input(analysis.pwout_raw, args.in1) # return = fn_lb, fn_bed
+    if in1 is None:
+        logger.error("Invalid input files provided for condition1")
+        status = 1
+    in2 = process_input(analysis.pwout_raw, args.in2) or []
+    analysis.control_bed = in1
+    analysis.case_bed = in2
+
+    
+    if status:
+        logger.error("Error encountered while processing input files")
+        return status
+    
+    # make homder tags
+    bed_list = ' '.join([_[1] for _ in in1 + in2])
+    cmd_homer = f'makeTagDirectory {pw_homer} -format bed -forceBED  {bed_list}'
+    status = os.system(cmd_homer)
+    if status:
+        logger.error("Error encountered while creating tag directory")
+        return status
+    
+    # find peaks
+    fn_peak_gtf, f_peak_txt = f'{pwout}/intermediate/trascript.txt', f'{pwout}/intermediate/trascript.gtf'
+    cmd_findpeaks = f'findPeaks {pw_homer} -style groseq -o {f_peak_txt} -gtf {fn_peak_gtf}'
+    status = os.system(cmd_findpeaks)
+    if status:
+        logger.error("Error encountered while running findPeaks")
+        return status
+
+    # cnofigs
+    # overlap_frac, cutoff, le, filter(0,1), 
+    # pri(0,1), peak (file), 
+    # lk (pp, gb, pindex), dir (1, -1, 0), wt (weight), fdr (cutoff)
+    overlap_frac = args.overlap_frac
+    window_active_genes = args.wd   #distance within which associate active genes of enhancer (bp, default: 50000)
+    lcut = args.cutoff #cutoff of 5' distance;
+    
+    filter_tss = args.filter
+    d_tss = args.dtss # if filter enhancers, the minimum distance from enhancer to TSS (Transcription Start Site) (bp, default: 2000)
+    d_tts = args.dtts # if filter enhancers, the minimum distance from enhancer to TTS(Transcription Termination Site) (bp, default: 20000)
+    erna_max_len = args.le #   length cutoff for long-eRNA identification (bp, default: 10000)
+    cutoff = args.cutoff # distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)
+    thres_merge = args.distance # distance between two eRNAs for merging(bp, default: 500)
+    
+    analysis.config = {
+        'overlap_frac': overlap_frac,
+        'window_active_genes': window_active_genes,
+        'lcut': lcut,
+        'filter_tss': filter_tss,
+        'd_tss': d_tss,
+        'd_tts': d_tts,
+        'erna_max_len': erna_max_len,
+        'cutoff': cutoff,
+        'thres_merge': thres_merge,
+    }
+    
+    
+    # compare the refseq gtf with peak_gtf
+    gtf_info = process_gtf(ref_fls['gtf'], pwout)
+    other_genes = gtf_compare(gtf_info, fn_peak_gtf, overlap_frac)
+
+    
 
     # check arguments
     check_return, ref_files = check_args(args)

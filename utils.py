@@ -236,7 +236,42 @@ def check_is_sorted(fn_bed):
                 return False
             last = start
     return True
+def get_ref_erna(organism):
+    # get the path of the reference files
+    ref_files = {}
+    pw_code = os.path.dirname(os.path.realpath(__file__))
+    pw_ref = os.path.join(pw_code, 'ref')
+    pw_fa = os.path.join(pw_code, 'fa')
+    pw_annotation = os.path.join(pw_code, 'annotation')
+    
+    ref_files = {}
+    ref_files["gtf"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-exon-formatted.gtf")
+    ref_files["tss"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-tss.txt")
+    ref_files["tss_tts"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-tss-tts.txt")
+    
+    ref_files["fa"] = os.path.join(pw_fa, organism, f"{organism}.fa")
 
+    ref_files["fdgenome"] = os.path.join(pw_annotation,  f"4DGenome-{organism}.txt")
+    ref_files["fantom"] = os.path.join(pw_annotation, "human_permissive_enhancers_phase_1_and_2.bed")
+    ref_files["association"] = os.path.join(pw_annotation, "human_enhancer_tss_associations.bed")
+
+    # validite file existence
+    for key, value in ref_files[genome].items():
+        if not os.path.exists(value):
+            if os.path.exists(f'{value}.gz'):
+                ref_files[key] = f'{value}.gz'
+                continue
+            
+            if pw_annotation not in value:
+                if organism in {'mm10', 'hg19', 'hg38'}:
+                    logger.warning(f"{organism} - {key}: '{value}' does not exist\n")
+                ref_files[key] = None
+            else:
+                logger.error(f"{organism} - {key}: '{value}' does not exist\n")
+                code = 1
+    if code:
+        return None
+    return ref_files
 
 def get_ref(organism, fa_in=None, gtf=None):
     # hg19.chrom.sizes
@@ -1974,43 +2009,47 @@ def process_tss_tts(fn):
     """
     example, /Users/files/work/jb/work/NRSA_v2/new/ref/hg19/RefSeq-hg19-tss-tts.txt
     chr1	11874	14409	NR_046018.2	+
+    chr1	3672278	3199733	XM_006495550.3	-
+    this col2 can be bigger than col3, depending on the strand, not a typical bed format
     """
-    tss_tts = {}
+    tss_tts_info = {}
     with open(fn, 'r') as file:
         for line in file:
             temp = line.strip().split('\t')
-            tss_tts[temp[3]] = {
+            tss_tts_info[temp[3]] = {
                 'chr': temp[0],
                 'tss': temp[1],
                 'tts': temp[2],
                 'strand': temp[4]
             }
 
-    return tss_tts
+    return tss_tts_info
 
-def filter_by_tss_tts(line, tss_tts_info):
+def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
     """
+    if the enhancer is near any gene defined in tss_tts_info, then drop it
     equiv to the filter function in eRNA.pl
     return 1 if keep this line, 0 if drop
     line is a list like [chr, start, end, center_str, fantom_str, assocation_str]
     center_str and fantom_str are multiple elements joined by ',', assocation_str is multiple elements joined by ';'
     tss_tts_info is got by parsing tss_tts.txt file, a dict, contains chr, tss, tts, strand
+    filter_tss: the minimum distance from enhancer to TSS
+    filter_tts: the minimum distance from enhancer to TTS
+    for the tss_tts_info, the tts can be smaller than tss, depending on the strand
     """
-    flag = 0
-    temp = in_list[i].split('\t')
-    chr = temp[0]
-    start = temp[1]
-    end = temp[2]
-    
+    # chr1	3361552	3377812	XR_865166.2	+
+    # chr1	3672278	3199733	XM_006495550.3	-
+    chr_, start, end = line[:3]
     for key in gene:
         if chr != gene[key]['chr']:
             continue
-        
         if gene[key]['strand'] == '+':
             if start <= gene[key]['tts'] and (gene[key]['tss'] - end) < filter_tss:
+                # end pos is within 2k of TSS
                 flag = 1
                 break
             if end >= gene[key]['tss'] and (start - gene[key]['tts']) < filter_tts:
+                # start pos is within 20k of TTS
                 flag = 1
                 break
         elif gene[key]['strand'] == '-':
@@ -2021,7 +2060,67 @@ def filter_by_tss_tts(line, tss_tts_info):
                 flag = 1
                 break
     
-    if flag == 0:
+    if flag == 0: # this site is not near any gene
         filter_outstr += in_list[i] + "\n"
 
+def get_overlap(s1, e1, s2, e2):
+    """
+    get the overlap fraction of two intervals
+    """
+    if s1 > e2 or s2 > e1:
+        return 0
+    return min(e1, e2) - max(s1, s2) + 1
 
+def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
+    """
+    compare the refseq_gtf and peak_gtf, and get the overlap fraction
+    """
+    # gtf_info, will use the start and end
+
+    # fn_peak_gtf is like below
+    # chr1	homer	exon	4768429	4785693	0.622000	-	.	gene_id "chr1-1854-1"; transcript_id "chr1-1854-1"
+    # chr1	homer	exon	4785562	4788480	0.040000	+	.	gene_id "chr1-2-0"; transcript_id "chr1-2-0"
+    ts_new_all = {}
+    with open(fn_peak_gtf) as f:
+        for i in f:
+            line = i[:-1].split('\t')
+            chr_, _, _, start, end, _, strand = line[:7]
+            chr_ = refine_chr(chr_)
+            transcritp_id = re.sub(r'[";]', '', line[-1])
+            ts_new_all[transcritp_id] = {'chr': chr_, 'start': int(start), 'end': int(end), 'strand': strand}
+
+    # annotated genes
+    ref_gene_type = {'coding': [], 'noncoding': [], 'no_overlap': []}
+    ts_new_with_overlap = set()
+    for ts, gene_info in gtf_info.items():
+        ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
+        overlap_sum = 0
+        ref_gene_len = ref_e - ref_s + 1
+        for its, its_info in ts_new_all.items():
+            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand:
+                continue
+            overlap = get_overlap(ref_s, ref_e, its_info['start'], its_info['end'])
+            overlap_sum += overlap
+            ts_new_with_overlap.add(its)
+        if overlap_sum >= overlap_frac * ref_gene_len:
+            itype = 'noncoding' if ts.startswith('NR') else 'coding'
+        else:
+            itype = 'no_overlap'
+        ref_gene_type[itype].append(ts)
+    
+    
+    # antisense genes, check overlap by flip the strand of the refseq transcripts and check overlap
+    ts_new_no_overlap = set(ts_new_all) - ts_new_with_overlap # only cehck antisense for these transcripts
+    antisense = {}
+    for ts, gene_info in gtf_info.items():
+        ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
+        ref_gene_len = ref_e - ref_s + 1
+        ref_strand_flip = '-' if ref_strand == '+' else '+'
+        overlap_sum = 0
+        for its, its_info in ts_new_no_overlap:
+            its_info = ts_new_all[its]
+            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand_flip:
+                continue
+            overlap = get_overlap(ref_s, ref_e, its_info['start'], its_info['end'])
+            if overlap >= overlap_frac * ref_gene_len:
+                antisense.setdefault(ts, []).append(its)

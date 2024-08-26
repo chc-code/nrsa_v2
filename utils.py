@@ -1988,10 +1988,13 @@ def process_tss_tts(fn):
 
     return tss_tts
 
-def filter_by_tss_tts(tss_tts_info, line):
+def filter_by_tss_tts(line, tss_tts_info):
     """
-    filter the line by tss_tts_info, return True if the line is in the tss_tts_info, otherwise, False
-    input line is enhancer out or lerna out
+    equiv to the filter function in eRNA.pl
+    return 1 if keep this line, 0 if drop
+    line is a list like [chr, start, end, center_str, fantom_str, assocation_str]
+    center_str and fantom_str are multiple elements joined by ',', assocation_str is multiple elements joined by ';'
+    tss_tts_info is got by parsing tss_tts.txt file, a dict, contains chr, tss, tts, strand
     """
     flag = 0
     temp = in_list[i].split('\t')
@@ -2020,4 +2023,5 @@ def filter_by_tss_tts(tss_tts_info, line):
     
     if flag == 0:
         filter_outstr += in_list[i] + "\n"
+
 

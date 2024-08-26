@@ -123,7 +123,7 @@ def getarg():
 
 
 def main():
-    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare
+    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, central
     from types import SimpleNamespace
     
     
@@ -179,8 +179,8 @@ def main():
         return status
     
     # find peaks
-    fn_peak_gtf, f_peak_txt = f'{pwout}/intermediate/trascript.txt', f'{pwout}/intermediate/trascript.gtf'
-    cmd_findpeaks = f'findPeaks {pw_homer} -style groseq -o {f_peak_txt} -gtf {fn_peak_gtf}'
+    fn_peak_gtf, fn_peak_txt = f'{pwout}/intermediate/trascript.txt', f'{pwout}/intermediate/trascript.gtf'
+    cmd_findpeaks = f'findPeaks {pw_homer} -style groseq -o {fn_peak_txt} -gtf {fn_peak_gtf}'
     status = os.system(cmd_findpeaks)
     if status:
         logger.error("Error encountered while running findPeaks")
@@ -216,55 +216,12 @@ def main():
     
     # compare the refseq gtf with peak_gtf
     gtf_info = process_gtf(ref_fls['gtf'], pwout)
-    other_genes = gtf_compare(gtf_info, fn_peak_gtf, overlap_frac)
+    other_genes = gtf_compare(gtf_info, fn_peak_gtf, overlap_frac) # the transcript without overlap with refseq gtf
+    other_region = get_other_region(other_genes, fn_peak_txt)
 
-    
-
-    # check arguments
-    check_return, ref_files = check_args(args)
-    if check_return:
-        sys.exit(1)
-
-    # check the input files, if bam, convert to bed
-    control_bed, case_bed = process_input(args)
-    if control_bed is None or case_bed is None:
-        return 1
-    
-    # create the tag files
-    pw_intermediate = os.path.join(pw_data, 'intermediate')
-    pw_tag = os.path.join(pw_intermediate, 'HOMER_tag')
-    
-    
-    bed_files = control_bed + case_bed
-    # use forceBED to ignore the 5th column
-    cmd_make_tag = f'makeTagDirectory {pw_tag} -format bed -forceBED {" ".join(bed_files)}'
-    
-    logger.info(f'Creating tag directory using HOMER')
-    run_status = os.system(cmd_make_tag)
-    if run_status != 0:
-        logger.error(f"Failed to create tag directory for HOMER, please check")
-        return 1
-    logger.info(f'done.')
-    
-    # findPeaks, this step is quite fast
-    # will generate the psuedo-transcript according to the alignment
-    out_txt = os.path.join(pw_intermediate, 'findpeaks.transcript.txt')
-    out_gtf = os.path.join(pw_intermediate, 'findpeaks.transcript.gtf')
-    logger.info(f'Finding peaks from input files')
-    cmd_findpeaks = f'findPeaks {pw_tag} -style groseq -o {out_txt} -gtf {out_gtf}'
-    run_status = os.system(cmd_findpeaks)
-    if run_status != 0:
-        logger.error(f"Failed to run findPeaks for HOMER, please check")
-        return 1
-    logger.info(f'done.')
-
-    # compare the gtf
-    other_gene = gtf_compare(out_gtf, ref_files[genome]["gtf"], overlap_frac)
-    other_region = region_compare(other_gene, out_txt)
-    
     # find the enhancer region
     logger.info(f'Finding enhancer region')
-    fno_enhancer, outstr3 = central(other_region, lcut, 'eRNA')
+    fno_enhancer, outstr3 = central(other_region, lcut)
     
     if fno_enhancer == 1:
         return 1

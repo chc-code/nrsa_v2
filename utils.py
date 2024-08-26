@@ -252,8 +252,15 @@ def get_ref_erna(organism):
     ref_files["fa"] = os.path.join(pw_fa, organism, f"{organism}.fa")
 
     ref_files["fdgenome"] = os.path.join(pw_annotation,  f"4DGenome-{organism}.txt")
-    ref_files["fantom"] = os.path.join(pw_annotation, "human_permissive_enhancers_phase_1_and_2.bed")
-    ref_files["association"] = os.path.join(pw_annotation, "human_enhancer_tss_associations.bed")
+    ref_files["fantom"], ref_files['association'] = {
+        'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
+        'mm10': ['mouse_permissive_enhancers_phase_1_and_2.bed', None],
+        'hg38': ['human_permissive_enhancers_phase_1_and_2-hg38.bed', 'human_enhancer_tss_associations-hg38.bed']
+        
+    }.get(organism, [None, None])
+    if ref_file['fantom']:
+        ref_files["fantom"] = os.path.join(pw_annotation, ref_files["fantom"])
+        ref_file['association'] = os.path.join(pw_annotation, ref_files['association'])
 
     # validite file existence
     for key, value in ref_files[genome].items():
@@ -2090,7 +2097,7 @@ def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
             ts_new_all[transcritp_id] = {'chr': chr_, 'start': int(start), 'end': int(end), 'strand': strand}
 
     # annotated genes
-    ref_gene_type = {'coding': [], 'noncoding': [], 'no_overlap': []}
+    ref_gene_type = {'coding': [], 'noncoding': []}
     ts_new_with_overlap = set()
     for ts, gene_info in gtf_info.items():
         ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
@@ -2104,23 +2111,124 @@ def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
             ts_new_with_overlap.add(its)
         if overlap_sum >= overlap_frac * ref_gene_len:
             itype = 'noncoding' if ts.startswith('NR') else 'coding'
-        else:
-            itype = 'no_overlap'
-        ref_gene_type[itype].append(ts)
+            ref_gene_type[itype].append(ts)
     
     
     # antisense genes, check overlap by flip the strand of the refseq transcripts and check overlap
     ts_new_no_overlap = set(ts_new_all) - ts_new_with_overlap # only cehck antisense for these transcripts
-    antisense = {}
+    ts_new_antisense_overlap = set()
     for ts, gene_info in gtf_info.items():
         ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
         ref_gene_len = ref_e - ref_s + 1
         ref_strand_flip = '-' if ref_strand == '+' else '+'
         overlap_sum = 0
-        for its, its_info in ts_new_no_overlap:
+        its_l = set()
+        for its in ts_new_no_overlap:
             its_info = ts_new_all[its]
             if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand_flip:
                 continue
             overlap = get_overlap(ref_s, ref_e, its_info['start'], its_info['end'])
-            if overlap >= overlap_frac * ref_gene_len:
-                antisense.setdefault(ts, []).append(its)
+            overlap_sum += overlap
+            its_l.add(its)
+            ts_new_with_overlap.append(its)
+    
+        if overlap_sum >= overlap_frac * ref_gene_len:
+            ts_new_antisense_overlap |= its_l
+
+    ts_new_no_overlap -= ts_new_antisense_overlap
+
+    # divergent genes
+    divergent = {}
+    ts_new_divergent_overlap = set()
+    ts_new_divergent_detail = {}
+    for ts, gene_info in gtf_info.items():
+        ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
+        ref_gene_len = ref_e - ref_s + 1
+        ref_strand_flip = '-' if ref_strand == '+' else '+'
+        if ref_gene_len < 1000:
+            continue
+        if ref_strand == '+':
+            ref_strand_flip = '-'
+            ref_s_new = ref_s -500
+            ref_e_new = ref_s + 499
+        else:
+            ref_strand_flip = '+'
+            ref_s_new = ref_e - 499
+            ref_e_new = ref_e + 500
+        overlap_sum = 0
+        trans_len = 0
+        its_l = set()
+        for its in ts_new_no_overlap:
+            its_info = ts_new_all[its]
+            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand_flip:
+                continue
+            overlap = get_overlap(ref_s_new, ref_e_new, its_info['start'], its_info['end'])
+            overlap_sum += overlap
+            trans_len += its_info['end'] - its_info['start'] + 1
+            its_l.add(its)
+            ts_new_with_overlap.append(its)
+        if overlap_sum >= 0.1 * trans_len and overlap_sum <= 0.5 * ref_gene_len:
+            divergent.setdefault(ts, []).append(its)
+
+    
+    ts_new_no_overlap -= ts_new_with_overlap
+    return ts_new_no_overlap
+
+def get_other_region(other_genes, fn_peak_txt):
+    # other_genes is ts_new_no_overlap above , is a set
+    # #PeakID chr     start   end     strand  Initial read depth      length (bp)
+    # chr16-266-1     chr16   57390979        57391720        -       58.1    741.000
+    # chr5-1675-0     chr5    146261022       146262398       +       49.2    1376.000
+    
+    regions = []
+    with open(fn_peak_txt) as f:
+        for i in f:
+            if i[0] == '#':
+                continue
+            line = i[:-1].split('\t')
+            if line[0] in other_genes:
+                regions.append(line[1:5])
+    return regions
+
+def central(other_region, lcut, fn_fantom, fn_association):
+    # other_region is a list of [chr, start, end, strand], got from above get_other_region function
+    plus_region = [_ for _ in other_region if _[3] == '+']
+    minus_region = [_ for _ in other_region if _[3] == '-']
+    
+    if fn_fantom:
+        fantom5 = {} # k1 = chr, k2 = each pos
+        # chr1	839741	840250	chr1:839741-840250	24	.	839787	839788	0,0,0	2	20,436	0,73
+        # chr1	840753	841210	chr1:840753-841210	32	.	840811	840812	0,0,0	2	8,347	0,110
+        with open(fn_fantom) as f:
+            for i in f:
+                chr_, s, e = i.split('\t')[:3]
+                chr_ = refine_chr(chr_)
+                s, e = int(s), int(e)
+                if chr_ not in fantom5:
+                    fantom5[chr_] = set()
+                fantom5[chr_] |= set(range(s, e + 1))
+    
+    # find association genes
+    if fn_association:
+        # #chrom	chromStart	chromEnd	name	score	strand	thickStart	thickEnd	itemRgb	blockCount	blockSizes	chromStarts
+        # chr1	66797292	67198741	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0	385	.	67198540	67198541	0,0,0	2	1001,401,	0,401048,
+
+        enh_gene = {}
+        with open(fn_association) as f:
+            f.readline()
+            for i in f:
+                line = i[:-1].split('\t')
+                chr_, s, e, info, score, strand = line[:6]
+                info = info.split(';')
+                if len(info) < 5:
+                    continue
+                e_chr, e_start, e_end = re.split(r'[-:]', info[0])
+                e_start, e_end = int(e_start), int(e_end)
+                assoc_gn = info[2]
+                for pos in range(e_start, e_end + 1):
+                    enh_gene.setdefault(e_chr, {}).setdefault(pos, []).append(assoc_gn)
+            
+    
+    # 4D genome
+    # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
+    # chr1	559905	561905	chr1	9000	11000	DDX11L1;	293T	3C	17704137

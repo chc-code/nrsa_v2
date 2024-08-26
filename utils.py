@@ -988,16 +988,22 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
 
             with open(fn_coverage_tmp) as f:
                 for i in f:
-                    _, transcript_id_chunk, ict = i.strip().rsplit('\t', 2)
-                    if ict == '0':
-                        continue
-                    transcript_id, bin_sn = transcript_id_chunk.rsplit('_', 1)
-                    # bin_sn = int(bin_sn)
-                    ict = int(ict)
-                    ict_norm = ict * norm_factor
-                    count.setdefault(transcript_id, {}).setdefault(bin_sn, 0)
-                    count[transcript_id][bin_sn] += ict_norm
-
+                    try:
+                        # chr13	51846175	51846375	NM_011817.2_24	+	9
+                        _, transcript_id_chunk, strand, ict = i.strip().rsplit('\t', 3)
+                        if ict == '0':
+                            continue
+                        transcript_id, bin_sn = transcript_id_chunk.rsplit('_', 1)
+                        # bin_sn = int(bin_sn)
+                        ict = int(ict)
+                        ict_norm = ict * norm_factor
+                        count.setdefault(transcript_id, {}).setdefault(bin_sn, 0)
+                        count[transcript_id][bin_sn] += ict_norm
+                    except:
+                        e = traceback.format_exc()
+                        logger.error(e)
+                        logger.error(f'error when processing {fn_coverage_tmp}, line = {i}, transcript_id_chunk = {transcript_id_chunk}')
+                        sys.exit(1)
 
         with open(fn_count_sum, 'w') as o:
             half_bin_number = (bin_number - 1) // 2
@@ -1730,6 +1736,7 @@ def process_gtf(fn_gtf, pwout):
         return None, fn_tss, err
     
     fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
+    fn_gtf_meta_json = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_meta.json'
     if os.path.exists(fn_gtf_pkl):
         logger.debug('loading gtf from pickle')
         
@@ -1812,22 +1819,29 @@ def process_gtf(fn_gtf, pwout):
     # merge transcripts with same start and end position
     res = {}
     n_merged = 0
+    meta = {'initial_n_transcripts': 0, 'n_merged': 0, 'final_n_transcripts': 0}
+
     for gn, v1 in res_raw.items():
         tmp = {}  # key = unique_id
         for transcript_id, v2 in v1.items():
             unique_id = f'{v2["chr"]}_{v2["start"]}_{v2["end"]}_{v2["strand"]}'
             tmp.setdefault(unique_id, []).append(transcript_id) # these transcripts have the same start and end position
+            meta['initial_n_transcripts'] += 1
         for transcript_list in tmp.values():
             if len(transcript_list) > 1:
-                n_merged += 1
+                n_merged += len(transcript_list) - 1
+                meta['n_merged'] += n_merged
             transcript_id_new = ';'.join(transcript_list)
             res[transcript_id_new] = v1[transcript_list[0]]
 
-    
+    meta['final_n_transcripts'] = len(res)
     logger.warning(f'merged {n_merged} transcripts with same start and end position')
     
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)
+    
+    with open(fn_gtf_meta_json, 'w') as o:
+        json.dump(meta, o, indent=4)
 
     build_tss(res, fn_tss)
     err_total = sum(err.values())

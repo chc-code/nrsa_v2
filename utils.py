@@ -670,9 +670,10 @@ def draw_box_plot(n_gene_cols, pwout, out_name, n_rep1, n_rep2=None, gn_list=Non
         plot_hist(n_rep2, n_rep1, pp_density, gb_density, 2)
     
 
-def draw_heatmap_pindex(n_gene_cols, pwout):
+def draw_heatmap_pindex(n_gene_cols, pwout, fdr_thres=0.05, fc_thres=0):
     """
     plot for the pindex change
+    fc_thres, the fc absolution value threshold for the pindex change
     """
     from matplotlib import pyplot as plt
     import matplotlib.colors as mcolors
@@ -681,23 +682,25 @@ def draw_heatmap_pindex(n_gene_cols, pwout):
     if not os.path.exists(fn_pindex_change):
         logger.error(f'{fn_pindex_change} not found')
         return 1
-    
-    
+
     data_plot = pd.read_csv(fn_pindex_change, sep='\t')
     # Transcript	Gene	log2fc	pvalue	FDR
+    cols = data_plot.columns
     idx_log2fc = n_gene_cols
     idx_pvalue = n_gene_cols + 1
     idx_fdr = n_gene_cols + 2
+    col_fdr, col_logfc = cols[idx_fdr], cols[idx_log2fc]
 
-    cols = data_plot.columns
+    # drop the rows which have NA in the log2fc and fdr column
+    data_plot = data_plot.dropna(subset=[col_logfc, col_fdr])
+
     # filter out the genes with FDR > 0.05
-    data_plot = data_plot[data_plot.iloc[:, idx_fdr] < 0.05]
+    data_plot = data_plot[(data_plot[col_fdr] < fdr_thres) & (abs(data_plot[col_logfc]) > fc_thres)]
     # sort by log2FC
-    col_logfc = cols[idx_log2fc]
-    data_plot = data_plot.sort_values(by=cols[idx_log2fc])
+    data_plot = data_plot.sort_values(by=col_logfc)
 
-    color_min = min(data_plot.iloc[:, idx_log2fc])
-    color_max = max(data_plot.iloc[:, idx_log2fc])
+    color_min = min(data_plot[col_logfc])
+    color_max = max(data_plot[col_logfc])
 
     colors = list(mcolors.ColorConverter().to_rgb(color) for color in ["green", "yellow", "red"])
     my_palette = mcolors.LinearSegmentedColormap.from_list("my_palette", colors, N=209)
@@ -711,6 +714,7 @@ def draw_heatmap_pindex(n_gene_cols, pwout):
 
     plt.savefig(f'{pwout}/known_gene/pindex_change.pdf', bbox_inches='tight')
     plt.close()
+    
 def get_line_count(fn):
     n = 0
     with gzip.open(fn) if fn.endswith('.gz') else open(fn) as f:

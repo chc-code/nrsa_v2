@@ -219,6 +219,7 @@ def main():
     other_genes = gtf_compare(gtf_info, fn_peak_gtf, overlap_frac) # the transcript without overlap with refseq gtf
     other_region = get_other_region(other_genes, fn_peak_txt)
 
+
     # find the enhancer region
     logger.info(f'Finding enhancer region')
     fno_enhancer, outstr3 = central(other_region, lcut)

@@ -9,6 +9,7 @@ import pickle
 import json
 from types import SimpleNamespace
 import traceback
+import gc
 
 def getargs():
     import argparse as arg
@@ -145,7 +146,7 @@ class Analysis:
         self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
         
-        for lb, d in zip(['Output', 'Intermediate', 'Known Genes', 'bed file folder'], [self.out_dir, self.inter_dir, self.known_gene_dir, f'{self.inter_dir}/bed']):
+        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.out_dir, self.inter_dir, self.known_gene_dir]):
             if not os.path.exists(d):
                 logger.debug(f'Making {lb} directory: {d}')
                 os.makedirs(d)
@@ -382,7 +383,11 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
             
             print('\t'.join(map(str, row)), file=fh_bed_peaks)
             s = bench(s, 'write to file')
-
+        # # release memory
+        del count_per_base
+        del count_bin 
+        gc.collect()
+        
     if fail_to_retrieve_seq:
         logger.warning(f'failed to retrieve sequence for {fail_to_retrieve_seq} genes')
 

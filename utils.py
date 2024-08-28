@@ -670,26 +670,24 @@ def draw_box_plot(n_gene_cols, pwout, out_name, n_rep1, n_rep2=None, gn_list=Non
         plot_hist(n_rep2, n_rep1, pp_density, gb_density, 2)
     
 
-def draw_heatmap_pindex(n_gene_cols, pwout, fdr_thres=0.05, fc_thres=0):
+def draw_heatmap_pindex(pwout, fdr_thres=0.05, fc_thres=0):
     """
     plot for the pindex change
     fc_thres, the fc absolution value threshold for the pindex change
     """
     from matplotlib import pyplot as plt
-    import matplotlib.colors as mcolors
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.colors import LinearSegmentedColormap
     
     fn_pindex_change = f'{pwout}/known_gene/pindex_change.txt'
+    fno = '{pwout}/known_gene/pindex_change.pdf'
     if not os.path.exists(fn_pindex_change):
         logger.error(f'{fn_pindex_change} not found')
         return 1
 
     data_plot = pd.read_csv(fn_pindex_change, sep='\t')
     # Transcript	Gene	log2fc	pvalue	FDR
-    cols = data_plot.columns
-    idx_log2fc = n_gene_cols
-    idx_pvalue = n_gene_cols + 1
-    idx_fdr = n_gene_cols + 2
-    col_fdr, col_logfc = cols[idx_fdr], cols[idx_log2fc]
+    col_fdr, col_logfc = 'FDR', 'log2fc'
 
     # drop the rows which have NA in the log2fc and fdr column
     data_plot = data_plot.dropna(subset=[col_logfc, col_fdr])
@@ -699,21 +697,26 @@ def draw_heatmap_pindex(n_gene_cols, pwout, fdr_thres=0.05, fc_thres=0):
     # sort by log2FC
     data_plot = data_plot.sort_values(by=col_logfc)
 
-    color_min = min(data_plot[col_logfc])
-    color_max = max(data_plot[col_logfc])
+    with PdfPages(fno) as pdf:
+        plt.figure(figsize=(2, 6))
+        grid = plt.GridSpec(2, 1, height_ratios=[14, 1])
+        ax1 = plt.subplot(grid[0, 0])
+        values = data_plot['log2fc'].values[::-1]
+        cmap = LinearSegmentedColormap.from_list("my_palette", ["green", "yellow", "red"], N=209)
 
-    colors = list(mcolors.ColorConverter().to_rgb(color) for color in ["green", "yellow", "red"])
-    my_palette = mcolors.LinearSegmentedColormap.from_list("my_palette", colors, N=209)
-
-    fig, ax = plt.subplots(figsize=(2, 6))
-    cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=my_palette), ax=ax, orientation='horizontal')
-    cbar.set_ticks([0, 0.5, 1])
-    cbar.set_ticklabels([color_min, 0, color_max])
-
-    img = ax.imshow(data_plot.iloc[:, 2].values.reshape(-1, 1), cmap=my_palette, aspect='auto')
-
-    plt.savefig(f'{pwout}/known_gene/pindex_change.pdf', bbox_inches='tight')
-    plt.close()
+        ax1.imshow(values.reshape(-1, 1), cmap=cmap, aspect='auto')
+        ax1.axis('off')
+        ax2 = plt.subplot(grid[1, 0])
+        gradient = np.linspace(min(values), max(values), 209).reshape(1, -1)
+        ax2.imshow(gradient, aspect='auto', cmap=cmap)
+        ax2.set_xticks([0, 104, 208])
+        ax2.set_xticklabels([round(min(values), 2), "0", round(max(values), 2)], fontsize=8)
+        ax2.set_yticks([])
+        ax2.set_xlabel("")
+        ax2.set_ylabel("")
+        plt.subplots_adjust(left = 0, right = 0.99, top=0.95, bottom = 0, hspace=0.05)
+        pdf.savefig(bbox_inches='tight')
+        plt.close()
     
 def get_line_count(fn):
     n = 0

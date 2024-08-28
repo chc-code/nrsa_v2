@@ -673,7 +673,7 @@ def main(args):
         
         # simple_heatmap
         logger.info(f'plotting pindex heatmap')
-        draw_heatmap_pindex(n_gene_cols, analysis.out_dir)
+        draw_heatmap_pindex(analysis.out_dir)
         
 
         # heatmap

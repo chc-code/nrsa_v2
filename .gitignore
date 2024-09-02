@@ -1,4 +1,5 @@
 ref/
+other/
 __pycache__/
 annotation/
 bigfile/

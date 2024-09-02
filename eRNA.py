@@ -1,3 +1,4 @@
+#! /data/cqs/chenh19/project/nrsa_v2/miniconda3/bin/python3.12
 
 
 import os, sys
@@ -155,7 +156,8 @@ def main():
     if dependency_status:
         logger.error("Dependency check failed")
         sys.exit(1)
-    analysis.pw_homer = f'{pwout}/intermediate/HOMER_tag'
+    pw_homer = f'{pwout}/intermediate/HOMER_tag'
+    args.pw_homer = pw_homer
 
     in1 = process_input(analysis.pwout_raw, args.in1) # return = fn_lb, fn_bed
     if in1 is None:

@@ -14,11 +14,12 @@ import pandas as pd
 import numpy as np
 import fisher
 import traceback
+import bisect 
 # import bisect
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
 pw_code = os.path.dirname(os.path.realpath(__file__))
-
+inf_neg = float('-inf')
 
 class HiddenPrints:
     def __enter__(self):
@@ -258,12 +259,12 @@ def get_ref_erna(organism):
         'hg38': ['human_permissive_enhancers_phase_1_and_2-hg38.bed', 'human_enhancer_tss_associations-hg38.bed']
         
     }.get(organism, [None, None])
-    if ref_file['fantom']:
+    if ref_files['fantom']:
         ref_files["fantom"] = os.path.join(pw_annotation, ref_files["fantom"])
-        ref_file['association'] = os.path.join(pw_annotation, ref_files['association'])
+        ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
 
     # validite file existence
-    for key, value in ref_files[genome].items():
+    for key, value in ref_files[organism].items():
         if not os.path.exists(value):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'
@@ -680,7 +681,7 @@ def draw_heatmap_pindex(pwout, fdr_thres=0.05, fc_thres=0):
     from matplotlib.colors import LinearSegmentedColormap
     
     fn_pindex_change = f'{pwout}/known_gene/pindex_change.txt'
-    fno = '{pwout}/known_gene/pindex_change.pdf'
+    fno = f'{pwout}/known_gene/pindex_change.pdf'
     if not os.path.exists(fn_pindex_change):
         logger.error(f'{fn_pindex_change} not found')
         return 1
@@ -688,6 +689,7 @@ def draw_heatmap_pindex(pwout, fdr_thres=0.05, fc_thres=0):
     data_plot = pd.read_csv(fn_pindex_change, sep='\t')
     # Transcript	Gene	log2fc	pvalue	FDR
     col_fdr, col_logfc = 'FDR', 'log2fc'
+    data_plot[col_logfc] = data_plot[col_logfc].replace([np.inf, -np.inf], np.nan)
 
     # drop the rows which have NA in the log2fc and fdr column
     data_plot = data_plot.dropna(subset=[col_logfc, col_fdr])
@@ -703,9 +705,10 @@ def draw_heatmap_pindex(pwout, fdr_thres=0.05, fc_thres=0):
         ax1 = plt.subplot(grid[0, 0])
         values = data_plot['log2fc'].values[::-1]
         cmap = LinearSegmentedColormap.from_list("my_palette", ["green", "yellow", "red"], N=209)
-
         ax1.imshow(values.reshape(-1, 1), cmap=cmap, aspect='auto')
         ax1.axis('off')
+        
+        
         ax2 = plt.subplot(grid[1, 0])
         gradient = np.linspace(min(values), max(values), 209).reshape(1, -1)
         ax2.imshow(gradient, aspect='auto', cmap=cmap)
@@ -882,6 +885,8 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     def to_number(s):
         if not s or s.upper() == 'NA':
             return 'NA'
+        if 'inf' in s:
+            return 'NA'
         return float(s)
 
     # read pp_change results
@@ -941,7 +946,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                 chr_orig = chr_map.get(chr_, chr_)
                 for pos in range(s, e, bin_size):
                     bin_sn += 1
-                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t{strand}', file=o)
+                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t-1\t{strand}', file=o)
         # logger.info('sort split region bed 2')
         fntmp = f'{fno}.tmp'
         os.system(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
@@ -967,6 +972,8 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     # logger.debug(factors_dict)
     # main part, get the overlap of the input bed files with the split bin bed
     # coverage_by_strand_flag = '-s'  # by_strand, if used, need to update the reference tss file
+    # logger.warning(f'currently getting coverage by strand')
+
     coverage_by_strand_flag = '' # current setting
     for condition, fls in {'control': fls_ctrl, 'case': fls_case}.items():
         fn_count_sum = f'{pwout}/intermediate/{condition}.count'
@@ -982,7 +989,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
             logger.info(f'getting coverage for {fn_lb}')
             s = time.time()
             cmd = f'bedtools coverage -a {split_bed_per_file} -b {fn_bed} -counts {coverage_by_strand_flag} -sorted > {fn_coverage_tmp}'
-            # logger.debug(cmd)
+            logger.debug(cmd)
             retcode = run_shell(cmd)
             if retcode:
                 logger.error(f'failed to run bedtools coverage for {fn_lb}')
@@ -997,7 +1004,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                 for i in f:
                     try:
                         # chr13	51846175	51846375	NM_011817.2_24	+	9
-                        _, transcript_id_chunk, strand, ict = i.strip().rsplit('\t', 3)
+                        _, transcript_id_chunk, _, strand, ict = i.strip().rsplit('\t', 4)
                         if ict == '0':
                             continue
                         transcript_id, bin_sn = transcript_id_chunk.rsplit('_', 1)
@@ -1009,7 +1016,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                     except:
                         e = traceback.format_exc()
                         logger.error(e)
-                        logger.error(f'error when processing {fn_coverage_tmp}, line = {i}, transcript_id_chunk = {transcript_id_chunk}')
+                        logger.error(f'error when processing {fn_coverage_tmp}, line = \n{i}\n')
                         sys.exit(1)
 
         with open(fn_count_sum, 'w') as o:
@@ -2099,9 +2106,11 @@ def get_overlap(s1, e1, s2, e2):
         return 0
     return min(e1, e2) - max(s1, s2) + 1
 
-def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
+def gtf_compare(gtf_info, fn_peak_gtf):
     """
+    verified, results match with perl code
     compare the refseq_gtf and peak_gtf, and get the overlap fraction
+    overlap_frac, removed.
     """
     # gtf_info, will use the start and end
 
@@ -2109,60 +2118,67 @@ def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
     # chr1	homer	exon	4768429	4785693	0.622000	-	.	gene_id "chr1-1854-1"; transcript_id "chr1-1854-1"
     # chr1	homer	exon	4785562	4788480	0.040000	+	.	gene_id "chr1-2-0"; transcript_id "chr1-2-0"
     ts_new_all = {}
+    ts_by_chr = {}
     with open(fn_peak_gtf) as f:
         for i in f:
             line = i[:-1].split('\t')
             chr_, _, _, start, end, _, strand = line[:7]
             chr_ = refine_chr(chr_)
-            transcritp_id = re.sub(r'[";]', '', line[-1])
+            # line[-1] is like gene_id "chr1-3785-1"; transcript_id "chr1-3785-1"
+            m = re.search(r'transcript_id "(\S+)"', line[-1])
+            if m:
+                transcritp_id = m.group(1)
+            else:
+                continue
+            chr_strand_key = f'{chr_}@{strand}'
             ts_new_all[transcritp_id] = {'chr': chr_, 'start': int(start), 'end': int(end), 'strand': strand}
+            ts_by_chr.setdefault(chr_strand_key, set()).add(transcritp_id)
 
     # annotated genes
-    ref_gene_type = {'coding': [], 'noncoding': []}
+    # ref_gene_type = {'coding': [], 'noncoding': []}
     ts_new_with_overlap = set()
-    for ts, gene_info in gtf_info.items():
+    for gene_info in gtf_info.values():
         ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
-        overlap_sum = 0
-        ref_gene_len = ref_e - ref_s + 1
-        for its, its_info in ts_new_all.items():
-            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand:
-                continue
+        # overlap_sum = 0
+        # ref_gene_len = ref_e - ref_s + 1
+        chr_strand_key = f'{ref_chr}@{ref_strand}'
+        ts_list = ts_by_chr.get(chr_strand_key, set())
+        for its in ts_list:
+            its_info = ts_new_all[its]
             overlap = get_overlap(ref_s, ref_e, its_info['start'], its_info['end'])
-            overlap_sum += overlap
-            ts_new_with_overlap.add(its)
-        if overlap_sum >= overlap_frac * ref_gene_len:
-            itype = 'noncoding' if ts.startswith('NR') else 'coding'
-            ref_gene_type[itype].append(ts)
-    
-    
+            # overlap_sum += overlap
+            if overlap > 0:
+                ts_new_with_overlap.add(its)
+            
+        # if overlap_sum >= overlap_frac * ref_gene_len:
+        #     itype = 'noncoding' if ts.startswith('NR') else 'coding'
+        #     ref_gene_type[itype].append(ts)
+
     # antisense genes, check overlap by flip the strand of the refseq transcripts and check overlap
     ts_new_no_overlap = set(ts_new_all) - ts_new_with_overlap # only cehck antisense for these transcripts
-    ts_new_antisense_overlap = set()
-    for ts, gene_info in gtf_info.items():
+    # ts_new_antisense_overlap = set()
+    for gene_info in gtf_info.values():
         ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
-        ref_gene_len = ref_e - ref_s + 1
+        # ref_gene_len = ref_e - ref_s + 1
         ref_strand_flip = '-' if ref_strand == '+' else '+'
-        overlap_sum = 0
-        its_l = set()
-        for its in ts_new_no_overlap:
+        chr_strand_key = f'{ref_chr}@{ref_strand_flip}'
+        ts_list = ts_by_chr.get(chr_strand_key, set()) - ts_new_with_overlap
+        # overlap_sum = 0
+        # its_l = set()
+        for its in ts_list:
             its_info = ts_new_all[its]
-            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand_flip:
-                continue
             overlap = get_overlap(ref_s, ref_e, its_info['start'], its_info['end'])
-            overlap_sum += overlap
-            its_l.add(its)
-            ts_new_with_overlap.append(its)
+            # overlap_sum += overlap
+            # its_l.add(its)
+            if overlap > 0:
+                ts_new_with_overlap.add(its)
     
-        if overlap_sum >= overlap_frac * ref_gene_len:
-            ts_new_antisense_overlap |= its_l
-
-    ts_new_no_overlap -= ts_new_antisense_overlap
+        # if overlap_sum >= overlap_frac * ref_gene_len:
+        #     ts_new_antisense_overlap |= its_l
 
     # divergent genes
-    divergent = {}
-    ts_new_divergent_overlap = set()
-    ts_new_divergent_detail = {}
-    for ts, gene_info in gtf_info.items():
+    ts_new_no_overlap -= ts_new_with_overlap
+    for gene_info in gtf_info.values():
         ref_chr, ref_strand, ref_s, ref_e = gene_info['chr'], gene_info['strand'], gene_info['start'], gene_info['end']
         ref_gene_len = ref_e - ref_s + 1
         ref_strand_flip = '-' if ref_strand == '+' else '+'
@@ -2176,26 +2192,32 @@ def gtf_compare(gtf_info, fn_peak_gtf, overlap_frac):
             ref_strand_flip = '+'
             ref_s_new = ref_e - 499
             ref_e_new = ref_e + 500
-        overlap_sum = 0
-        trans_len = 0
-        its_l = set()
-        for its in ts_new_no_overlap:
+        # overlap_sum = 0
+        # trans_len = 0
+        # its_l = set()
+        chr_strand_key = f'{ref_chr}@{ref_strand_flip}'
+        ts_list = ts_by_chr.get(chr_strand_key, set()) - ts_new_with_overlap
+        for its in ts_list:
             its_info = ts_new_all[its]
-            if its_info['chr'] != ref_chr or its_info['strand'] != ref_strand_flip:
-                continue
             overlap = get_overlap(ref_s_new, ref_e_new, its_info['start'], its_info['end'])
-            overlap_sum += overlap
-            trans_len += its_info['end'] - its_info['start'] + 1
-            its_l.add(its)
-            ts_new_with_overlap.append(its)
-        if overlap_sum >= 0.1 * trans_len and overlap_sum <= 0.5 * ref_gene_len:
-            divergent.setdefault(ts, []).append(its)
-
-    
+            # overlap_sum += overlap
+            # trans_len += its_info['end'] - its_info['start'] + 1
+            # its_l.add(its)
+            if overlap > 0:
+                ts_new_with_overlap.append(its)
+        # if overlap_sum >= 0.1 * trans_len and overlap_sum <= 0.5 * ref_gene_len:
+        #     divergent.setdefault(ts, []).append(its)
     ts_new_no_overlap -= ts_new_with_overlap
+    
+    # with open('other_genes.v2.txt', 'w') as o:
+    #     print('\n'.join(sorted(ts_new_no_overlap)), file=o)
+    
     return ts_new_no_overlap
 
 def get_other_region(other_genes, fn_peak_txt):
+    """
+    verified, results are same as perl output
+    """
     # other_genes is ts_new_no_overlap above , is a set
     # #PeakID chr     start   end     strand  Initial read depth      length (bp)
     # chr16-266-1     chr16   57390979        57391720        -       58.1    741.000
@@ -2208,22 +2230,57 @@ def get_other_region(other_genes, fn_peak_txt):
                 continue
             line = i[:-1].split('\t')
             if line[0] in other_genes:
+                # line[1] = refine_chr(line[1])  # line[1] is chr
+                line[2], line[3] = int(line[2]), int(line[3])
                 regions.append(line[1:5])
     return regions
 
-def central(other_region, lcut, fn_fantom, fn_association):
+
+def is_in_any_interval(intervals, v):
+    """
+    check if a specific number fall in any interval
+    the intervals must be sorted
+    inf_neg is the negative infinity, defined outside
+    """
+    
+    i = bisect.bisect_left(intervals, [v, inf_neg])
+    if i < len(intervals) and intervals[i][0] <= v <= intervals[i][1]:
+        return True
+    if i > 0 and intervals[-1][0] <= v <= intervals[-1][1]:
+        return True
+    return False
+
+
+def get_enhancer(other_region, fn_fantom, fn_association, lcut=400, thres_long_eRNA=10_000):
+    """
+    equiv to the central function in eRNA.pl
+    the chr_ here in other_regions and the files are original format, don't need to be refiend
+    thres_long_eRNA, only the length > this value, will be considered as longeRNA
+    lcut, cutoff of 5' distance
+    """
     # other_region is a list of [chr, start, end, strand], got from above get_other_region function
     plus_region = [_ for _ in other_region if _[3] == '+']
+    
+    # for the region, ele2 is always smaller than ele3, even if it's minus strand
     minus_region = [_ for _ in other_region if _[3] == '-']
     
+    fantom5 = {} # k1 = chr, k2 = each pos
+    enh_gene = {}
+    enh_out = []
+    lerna_out = []
+    
+    region_start = {}
+    center_list = {}
+    fantom_list = {}
+    asso_list = {}
+    
+
     if fn_fantom:
-        fantom5 = {} # k1 = chr, k2 = each pos
         # chr1	839741	840250	chr1:839741-840250	24	.	839787	839788	0,0,0	2	20,436	0,73
         # chr1	840753	841210	chr1:840753-841210	32	.	840811	840812	0,0,0	2	8,347	0,110
         with open(fn_fantom) as f:
             for i in f:
                 chr_, s, e = i.split('\t')[:3]
-                chr_ = refine_chr(chr_)
                 s, e = int(s), int(e)
                 if chr_ not in fantom5:
                     fantom5[chr_] = set()
@@ -2233,13 +2290,12 @@ def central(other_region, lcut, fn_fantom, fn_association):
     if fn_association:
         # #chrom	chromStart	chromEnd	name	score	strand	thickStart	thickEnd	itemRgb	blockCount	blockSizes	chromStarts
         # chr1	66797292	67198741	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0	385	.	67198540	67198541	0,0,0	2	1001,401,	0,401048,
+        # actually the strand column in all rows are dot
 
-        enh_gene = {}
         with open(fn_association) as f:
             f.readline()
             for i in f:
-                line = i[:-1].split('\t')
-                chr_, s, e, info, score, strand = line[:6]
+                chr_, s, e, info = i[:-1].split('\t', 4)[:4]
                 info = info.split(';')
                 if len(info) < 5:
                     continue
@@ -2247,9 +2303,22 @@ def central(other_region, lcut, fn_fantom, fn_association):
                 e_start, e_end = int(e_start), int(e_end)
                 assoc_gn = info[2]
                 for pos in range(e_start, e_end + 1):
-                    enh_gene.setdefault(e_chr, {}).setdefault(pos, []).append(assoc_gn)
+                    enh_gene.setdefault(e_chr, {}).setdefault(pos, set()).add(assoc_gn)
             
-    
-    # 4D genome
-    # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
-    # chr1	559905	561905	chr1	9000	11000	DDX11L1;	293T	3C	17704137
+    for iplus in plus_region:
+        chr_plus, s_plus, e_plus, strand_plus = iplus
+        region_start.setdefault(chr_plus, set()).add(e_plus)
+        len_region = e_plus - s_plus
+        is_long_eRNA_plus = True if len_region > thres_long_eRNA else False
+        for iminus in minus_region:
+            chr_minus, s_minus, e_minus, strand_minus = iminus
+            if chr_minus != chr_plus:
+                continue
+            
+            # not sure why use this criteria, exclude when partial overlap
+            if e_plus <= e_minus and s_plus < s_minus:
+                continue
+            
+            len_region = e_minus - s_minus
+            is_long_eRNA_minus = True if len_region > thres_long_eRNA else False
+            distance = s_plus - e_minus

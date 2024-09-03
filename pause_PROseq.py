@@ -489,7 +489,7 @@ def main(args):
 
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
-    gtf_info, fn_tss, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
+    gtf_info, fn_tss, fn_tss_tts, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
 
     # if args.testfunc:
     #     logger.warning('Debugging mode')

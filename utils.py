@@ -237,7 +237,7 @@ def check_is_sorted(fn_bed):
                 return False
             last = start
     return True
-def get_ref_erna(organism):
+def get_ref_erna(organism, fn_gtf=None):
     # get the path of the reference files
     ref_files = {}
     pw_code = os.path.dirname(os.path.realpath(__file__))
@@ -246,19 +246,26 @@ def get_ref_erna(organism):
     pw_annotation = os.path.join(pw_code, 'annotation')
     
     ref_files = {}
-    ref_files["gtf"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-exon-formatted.gtf")
-    ref_files["tss"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-tss.txt")
-    ref_files["tss_tts"] = os.path.join(pw_ref, organism, f"RefSeq-{organism}-tss-tts.txt")
-    
+    ref_files["gtf"] = fn_gtf or os.path.join(pw_ref, organism, f"RefSeq-{organism}.gtf")
+
     ref_files["fa"] = os.path.join(pw_fa, organism, f"{organism}.fa")
 
     ref_files["fdgenome"] = os.path.join(pw_annotation,  f"4DGenome-{organism}.txt")
+    
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
         'mm10': ['mouse_permissive_enhancers_phase_1_and_2.bed', None],
         'hg38': ['human_permissive_enhancers_phase_1_and_2-hg38.bed', 'human_enhancer_tss_associations-hg38.bed']
         
     }.get(organism, [None, None])
+    
+    # 4d, dm3, dm6, hg19, hg38, mm10
+    # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
+    if organism in ['dm3', 'dm6', 'hg19', 'hg38', 'mm10']:
+        ref_files['4d'] = f'{pw_annotation}/4DGenome-{organism}.txt'
+    else:
+        ref_files['4d'] = None
+    
     if ref_files['fantom']:
         ref_files["fantom"] = os.path.join(pw_annotation, ref_files["fantom"])
         ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
@@ -1715,14 +1722,16 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
     gene_info.update(new_info)
     return gene_info
 
-def build_tss(gtf_info, fn_tss):
+def build_tss(gtf_info, fn_tss, fn_tss_tts):
     # create the TSS file
     # chr1	11874	11874	NR_046018.2	+
     logger.info('creating TSS file')
-    with open(fn_tss, 'w') as f:
+    with open(fn_tss, 'w') as f, open(fn_tss_tts, 'w') as o2:
         for k, v in gtf_info.items():
-            itss = v['start'] if v['strand'] == '+' else v['end']
+            itss, itts = [v['start'], v['end']] if v['strand'] == '+' else [v['end'], v['start']]
+            
             f.write(f'{v["chr"]}\t{itss}\t{itss}\t{k}\t{v["strand"]}\n')
+            o2.write(f'{v["chr"]}\t{itss}\t{itts}\t{k}\t{v["strand"]}\n')
 
 def process_gtf(fn_gtf, pwout):
     """
@@ -1735,7 +1744,8 @@ def process_gtf(fn_gtf, pwout):
     fn_gtf_lb = os.path.basename(fn_gtf).replace('.gz', '').replace('.gtf', '')
 
     fn_tss = f'{pwout}/intermediate/{fn_gtf_lb}.tss.txt'
-
+    fn_tss_tts = f'{pwout}/intermediate/{fn_gtf_lb}.tss_tts.txt'
+    
     # check if have write permission to the folder of the gtf file
     if not os.access(os.path.dirname(fn_gtf), os.W_OK):
         home = os.path.expanduser("~")
@@ -1747,7 +1757,7 @@ def process_gtf(fn_gtf, pwout):
     if 'gtf' not in fn_gtf.rsplit('.', 2)[-2:]:
         logger.error(f'the gtf file should have the extension of .gtf: {fn_gtf}')
         sys.exit(1)
-        return None, fn_tss, err
+        return None, fn_tss, fn_tss_tts, err
     
     fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
     fn_gtf_meta_json = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_meta.json'
@@ -1757,8 +1767,8 @@ def process_gtf(fn_gtf, pwout):
         with open(fn_gtf_pkl, 'rb') as f:
             gtf_info = pickle.load(f)
         if not os.path.exists(fn_tss):
-            build_tss(gtf_info, fn_tss)
-        return gtf_info, fn_tss, err
+            build_tss(gtf_info, fn_tss, fn_tss_tts)
+        return gtf_info, fn_tss, fn_tss_tts, err
     
     gtf_col_idx = {
         'chr': 0,
@@ -1857,11 +1867,11 @@ def process_gtf(fn_gtf, pwout):
     with open(fn_gtf_meta_json, 'w') as o:
         json.dump(meta, o, indent=4)
 
-    build_tss(res, fn_tss)
+    build_tss(res, fn_tss, fn_tss_tts)
     err_total = sum(err.values())
     if err_total:
         logger.info(f'error in parsing gtf file: {err}')
-    return res, fn_tss, err
+    return res, fn_tss, fn_tss_tts, err
 
 
 
@@ -2040,63 +2050,6 @@ def process_input(pwout_raw, fls):
     return res
 
 
-def process_tss_tts(fn):
-    """
-    example, /Users/files/work/jb/work/NRSA_v2/new/ref/hg19/RefSeq-hg19-tss-tts.txt
-    chr1	11874	14409	NR_046018.2	+
-    chr1	3672278	3199733	XM_006495550.3	-
-    this col2 can be bigger than col3, depending on the strand, not a typical bed format
-    """
-    tss_tts_info = {}
-    with open(fn, 'r') as file:
-        for line in file:
-            temp = line.strip().split('\t')
-            tss_tts_info[temp[3]] = {
-                'chr': temp[0],
-                'tss': temp[1],
-                'tts': temp[2],
-                'strand': temp[4]
-            }
-
-    return tss_tts_info
-
-def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
-    """
-    if the enhancer is near any gene defined in tss_tts_info, then drop it
-    equiv to the filter function in eRNA.pl
-    return 1 if keep this line, 0 if drop
-    line is a list like [chr, start, end, center_str, fantom_str, assocation_str]
-    center_str and fantom_str are multiple elements joined by ',', assocation_str is multiple elements joined by ';'
-    tss_tts_info is got by parsing tss_tts.txt file, a dict, contains chr, tss, tts, strand
-    filter_tss: the minimum distance from enhancer to TSS
-    filter_tts: the minimum distance from enhancer to TTS
-    for the tss_tts_info, the tts can be smaller than tss, depending on the strand
-    """
-    # chr1	3361552	3377812	XR_865166.2	+
-    # chr1	3672278	3199733	XM_006495550.3	-
-    chr_, start, end = line[:3]
-    for key in gene:
-        if chr != gene[key]['chr']:
-            continue
-        if gene[key]['strand'] == '+':
-            if start <= gene[key]['tts'] and (gene[key]['tss'] - end) < filter_tss:
-                # end pos is within 2k of TSS
-                flag = 1
-                break
-            if end >= gene[key]['tss'] and (start - gene[key]['tts']) < filter_tts:
-                # start pos is within 20k of TTS
-                flag = 1
-                break
-        elif gene[key]['strand'] == '-':
-            if start <= gene[key]['tss'] and (gene[key]['tts'] - end) < filter_tts:
-                flag = 1
-                break
-            if end >= gene[key]['tts'] and (start - gene[key]['tss']) < filter_tss:
-                flag = 1
-                break
-    
-    if flag == 0: # this site is not near any gene
-        filter_outstr += in_list[i] + "\n"
 
 def get_overlap(s1, e1, s2, e2):
     """
@@ -2224,13 +2177,14 @@ def get_other_region(other_genes, fn_peak_txt):
     # chr5-1675-0     chr5    146261022       146262398       +       49.2    1376.000
     
     regions = []
+    # the chr_ here is refined format
     with open(fn_peak_txt) as f:
         for i in f:
             if i[0] == '#':
                 continue
             line = i[:-1].split('\t')
             if line[0] in other_genes:
-                # line[1] = refine_chr(line[1])  # line[1] is chr
+                line[1] = refine_chr(line[1])  # line[1] is chr
                 line[2], line[3] = int(line[2]), int(line[3])
                 regions.append(line[1:5])
     return regions
@@ -2251,30 +2205,25 @@ def is_in_any_interval(intervals, v):
     return False
 
 
-def get_enhancer(other_region, fn_fantom, fn_association, lcut=400, thres_long_eRNA=10_000):
+def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, thres_long_eRNA=10_000, distance_for_merge=500, filter=False):
     """
     equiv to the central function in eRNA.pl
     the chr_ here in other_regions and the files are original format, don't need to be refiend
     thres_long_eRNA, only the length > this value, will be considered as longeRNA
     lcut, cutoff of 5' distance
+    distance_for_merge: if 2 eRNA regions distance < 500, merge these 2
+    filter:  filter the result based on TSS-TTS
+    chr_ here is refined
     """
     # other_region is a list of [chr, start, end, strand], got from above get_other_region function
-    plus_region = [_ for _ in other_region if _[3] == '+']
-    
-    # for the region, ele2 is always smaller than ele3, even if it's minus strand
-    minus_region = [_ for _ in other_region if _[3] == '-']
-    
-    fantom5 = {} # k1 = chr, k2 = each pos
-    enh_gene = {}
-    enh_out = []
-    lerna_out = []
-    
-    region_start = {}
-    center_list = {}
-    fantom_list = {}
-    asso_list = {}
-    
+    regions = {}
+    for i in other_region:
+        chr_, s, e, strand = i[:4]
+        regions.setdefault(chr_, {'+': [], '-': []})[strand].append([s, e])
 
+    fantom_sites= {} # k1 = chr, k2 = each pos
+    enh_sites = {}
+    
     if fn_fantom:
         # chr1	839741	840250	chr1:839741-840250	24	.	839787	839788	0,0,0	2	20,436	0,73
         # chr1	840753	841210	chr1:840753-841210	32	.	840811	840812	0,0,0	2	8,347	0,110
@@ -2282,9 +2231,10 @@ def get_enhancer(other_region, fn_fantom, fn_association, lcut=400, thres_long_e
             for i in f:
                 chr_, s, e = i.split('\t')[:3]
                 s, e = int(s), int(e)
-                if chr_ not in fantom5:
-                    fantom5[chr_] = set()
-                fantom5[chr_] |= set(range(s, e + 1))
+                chr_ = refine_chr(chr_)
+                if chr_ not in fantom_sites:
+                    fantom_sites[chr_] = set()
+                fantom_sites[chr_] |= set(range(s, e + 1))
     
     # find association genes
     if fn_association:
@@ -2296,29 +2246,170 @@ def get_enhancer(other_region, fn_fantom, fn_association, lcut=400, thres_long_e
             f.readline()
             for i in f:
                 chr_, s, e, info = i[:-1].split('\t', 4)[:4]
+                chr_ = refine_chr(chr_)
                 info = info.split(';')
                 if len(info) < 5:
                     continue
                 e_chr, e_start, e_end = re.split(r'[-:]', info[0])
                 e_start, e_end = int(e_start), int(e_end)
                 assoc_gn = info[2]
-                for pos in range(e_start, e_end + 1):
-                    enh_gene.setdefault(e_chr, {}).setdefault(pos, set()).add(assoc_gn)
+                if e_chr not in enh_sites:
+                    enh_sites[e_chr] = {}
+                for i in range(e_start, e_end + 1):
+                    enh_sites[e_chr].setdefault(i, set()).add(assoc_gn)
+    
+    # the gene list value to string 
+    tmp = {}
+    for k1, v1 in enh_sites.items():
+        tmp[k1] = {}
+        for k2, v2 in v1.items():
+            tmp[k1][k2] = ','.join(sorted(v2))
+    enh_sites = tmp
+    
+    # find center of enhancers
+    enhancer_region = {}
+    lerna_out = set()
+
+    for chr_, v1 in regions.items():
+        plus_region = sorted(v1['+'])
+        minus_region = sorted(v1['-'], key=lambda x: x[1])
+        minus_region_e = [_[1] for _ in minus_region] # used for jump to most adjacent plus region
+        
+        enhancer_region[chr_] = {} # k = e_plus, v = the e_minus
+
+        for s_plus, e_plus in plus_region:
+            len_plus_region = e_plus - s_plus
+            is_long_eRNA_plus = True if len_plus_region > thres_long_eRNA else False
+            iregion = {'start': e_plus, 'end': e_plus, 'center_list': [], 'fantom_list': [], 'asso_list': []}
             
-    for iplus in plus_region:
-        chr_plus, s_plus, e_plus, strand_plus = iplus
-        region_start.setdefault(chr_plus, set()).add(e_plus)
-        len_region = e_plus - s_plus
-        is_long_eRNA_plus = True if len_region > thres_long_eRNA else False
-        for iminus in minus_region:
-            chr_minus, s_minus, e_minus, strand_minus = iminus
-            if chr_minus != chr_plus:
-                continue
+            # get the loop start for minus_region
+            idx_minus_region = bisect.bisect(minus_region, s_plus - lcut) # from this index and after, all with d < lcut
+            for s_minus, e_minus in minus_region[idx_minus_region:]:
+                if s_minus >= e_plus:
+                    break
+                if s_plus < s_minus and e_plus <= e_minus:
+                    continue
+                
+                distance = s_plus - e_minus
+                if distance > lcut:
+                    continue
+                
+                if s_minus < s_plus and e_minus <= e_plus:
+                    # minus is before plus or have partial overlap
+                    center_pos = s_plus - distance // 2
+                elif s_minus >= s_plus and e_minus < e_plus:
+                    # minus region is inside of plus
+                    center_pos = e_minus
+                elif s_minus < s_plus and e_minus > e_plus:
+                    # plus region is inside of minus
+                    center_pos = s_plus
+                else:
+                    continue
+                if s_minus < iregion['start']:
+                    iregion['start'] = s_minus
+                iregion['center_list'].append(center_pos)
+                iregion['fantom_list'].append('Y' if center_pos in fantom_sites[chr_] else 'N')
+                iregion['asso_list'].append(enh_sites[chr_][center_pos] if center_pos in enh_sites[chr_] else 'NA')
+                
+                len_minus_region = e_minus - s_minus
+                if if len_minus_region > thres_long_eRNA:
+                    lerna_out.add([chr_, s_minus, e_minus, '-'])
+                
+            # plus region is longeRNA
+            n_centers = len(iregion['center_list'])
+            if is_long_eRNA_plus and n_centers > 0:
+                lerna_out.add([chr_, s_plus, e_plus, '+'])
             
-            # not sure why use this criteria, exclude when partial overlap
-            if e_plus <= e_minus and s_plus < s_minus:
-                continue
+            if n_centers > 0:
+                # thre are matched minus strand to make a region
+                enhancer_region[chr_][e_plus] = iregion
+    
+    # combine adjacent regions
+    enh_out = []
+    for chr_, v1 in enhancer_region.items():
+        prev_region = None
+        for region_end in sorted(v1):
+            iregion = v1[region_end]
+            iregion['chr'] = chr_
+            if prev_region and iregion['start'] - prev_region['end'] < distance_for_merge:
+                prev_region['end'] = iregion['end']
+                prev_region['center_list'] += iregion['center_list']
+                prev_region['fantom_list'] += iregion['fantom_list']
+                prev_region['asso_list'] += iregion['asso_list']
+            else:
+                enh_out.append(iregion)
+            prev_region =iregion
+    enh_out_str = ['\t'.join([i['chr'], i['start'], i['end'], ','.join(i['center_list']), ','.join(i['fantom_list']), ';'.join(i['asso_list'])]) for i in enh_out]
+    
+    lerna_out = sorted(lerna_out, key=lambda x: (x[0, x[1], x[2]]))
+    
+    if filter:
+        if not exists(fn_tss_tts):
+            logger.warning(f'no tss_tts file found, skip filtering')
+        else:
+            tss_tts_info = process_tss_tts(fn_tss_tts)
+            enh_out_str = [line for line in enh_out_str if filter_by_tss_tts(line, tss_tts_info)]
+            lerna_out = [line for line in lerna_out if filter_by_tss_tts(line, tss_tts_info)]
+    
+    # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
+    return enh_out_str, lerna_out, 
             
-            len_region = e_minus - s_minus
-            is_long_eRNA_minus = True if len_region > thres_long_eRNA else False
-            distance = s_plus - e_minus
+
+def process_tss_tts(fn):
+    """
+    example, /Users/files/work/jb/work/NRSA_v2/new/ref/hg19/RefSeq-hg19-tss-tts.txt
+    chr1	11874	14409	NR_046018.2	+
+    chr1	3672278	3199733	XM_006495550.3	-
+    this col2 can be bigger than col3, depending on the strand, not a typical bed format
+    """
+    tss_tts_info = {}
+    with open(fn, 'r') as file:
+        for line in file:
+            temp = line.strip().split('\t')
+            chr_ = refine_chr(temp[0])
+            tss_tts_info.setdefault(chr_, {})[temp[3]] = {
+                'chr': temp[0],
+                'tss': temp[1],
+                'tts': temp[2],
+                'strand': temp[4]
+            }
+
+    return tss_tts_info
+
+
+def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
+    """
+    if the enhancer is near any gene defined in tss_tts_info, then drop it
+    equiv to the filter function in eRNA.pl
+    return 1 if keep this line, 0 if drop
+    line is a list like [chr, start, end, center_str, fantom_str, assocation_str]
+    center_str and fantom_str are multiple elements joined by ',', assocation_str is multiple elements joined by ';'
+    tss_tts_info is got by parsing tss_tts.txt file, a dict, contains chr, tss, tts, strand
+    filter_tss: the minimum distance from enhancer to TSS
+    filter_tts: the minimum distance from enhancer to TTS
+    for the tss_tts_info, the tts can be smaller than tss, depending on the strand
+    """
+    # chr1	3361552	3377812	XR_865166.2	+
+    # chr1	3672278	3199733	XM_006495550.3	-
+    chr_, start, end = line[:3]
+    if chr_ not in tss_tts_info:
+        return 1
+    keep = 1
+    for v in tss_tts_info[chr_].values():
+        if v['strand'] == '+':
+            if start <= v['tts'] and (v['tss'] - end) < filter_tss:
+                # end pos is within 2k of TSS
+                keep = 0
+                break
+            if end >= v['tss'] and (start - v['tts']) < filter_tts:
+                # start pos is within 20k of TTS
+                keep = 0
+                break
+        elif v['strand'] == '-':
+            if start <= v['tss'] and (v['tts'] - end) < filter_tts:
+                keep = 0
+                break
+            if end >= v['tts'] and (start - v['tss']) < filter_tss:
+                keep = 0
+                break
+    return keep

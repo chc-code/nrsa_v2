@@ -103,9 +103,9 @@ def getarg():
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
     ps.add_argument('-pwout', help="""work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
     ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], required=True)
+    ps.add_argument('-gtf', help='Customized GTF file path, if not specified, will use the default one for the organism')
 
-
-    ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
+    # ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
     ps.add_argument('-cutoff', '-c', help="""distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)""", type=int, default=400)
     ps.add_argument('-distance', 'd', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-le', '-long_ena', help="""length cutoff for long-eRNA identification (bp, default: 10000)""", type=int, default=10000)
@@ -124,7 +124,7 @@ def getarg():
 
 
 def main():
-    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, central
+    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr
     from types import SimpleNamespace
     
     
@@ -137,6 +137,7 @@ def main():
     # lk (pp, gb, pindex), dir (1, -1, 0), wt (weight), fdr (cutoff)
     analysis = SimpleNamespace()
     analysis.pwout = pwout = args.pwout
+    fn_gtf = args.gtf
     analysis.pwout_raw = args_d.get('pwout_raw', pwout)
 
     ref_fls = get_ref_erna(args.organism)
@@ -192,603 +193,499 @@ def main():
     # overlap_frac, cutoff, le, filter(0,1), 
     # pri(0,1), peak (file), 
     # lk (pp, gb, pindex), dir (1, -1, 0), wt (weight), fdr (cutoff)
-    overlap_frac = args.overlap_frac
+    # overlap_frac = args.overlap_frac
     window_active_genes = args.wd   #distance within which associate active genes of enhancer (bp, default: 50000)
     lcut = args.cutoff #cutoff of 5' distance;
     
     filter_tss = args.filter
     d_tss = args.dtss # if filter enhancers, the minimum distance from enhancer to TSS (Transcription Start Site) (bp, default: 2000)
     d_tts = args.dtts # if filter enhancers, the minimum distance from enhancer to TTS(Transcription Termination Site) (bp, default: 20000)
-    erna_max_len = args.le #   length cutoff for long-eRNA identification (bp, default: 10000)
+    thres_long_eRNA = args.le #   length cutoff for long-eRNA identification (bp, default: 10000), if eRNA > this value, will be identified as long eRNA
     cutoff = args.cutoff # distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)
     thres_merge = args.distance # distance between two eRNAs for merging(bp, default: 500)
     
     analysis.config = {
-        'overlap_frac': overlap_frac,
+        # 'overlap_frac': overlap_frac,
         'window_active_genes': window_active_genes,
         'lcut': lcut,
         'filter_tss': filter_tss,
         'd_tss': d_tss,
         'd_tts': d_tts,
-        'erna_max_len': erna_max_len,
+        'thres_long_eRNA': thres_long_eRNA,
         'cutoff': cutoff,
         'thres_merge': thres_merge,
     }
     
     
     # compare the refseq gtf with peak_gtf
-    gtf_info = process_gtf(ref_fls['gtf'], pwout)
-    other_genes = gtf_compare(gtf_info, fn_peak_gtf, overlap_frac) # the transcript without overlap with refseq gtf
+    gtf_info, fn_tss, fn_tss_tts, err = process_gtf(ref_fls['gtf'], pwout)
+    other_genes = gtf_compare(gtf_info, fn_peak_gtf) # the transcript without overlap with refseq gtf
     other_region = get_other_region(other_genes, fn_peak_txt)
 
+    # load active genes
+    # 2 columns, col2 = ts, col2 = gn
+    fn_active_genes = f'{pwout}/intermediate/active_gene.txt'
+    fn_active_tss = f'{pwout}/intermediate/active_tss.txt'
+    with open(fn_active_genes) as f:
+        active_genes = {_.split('\t')[0] for _ in f if _.strip()}
 
+    active_tss = {}
+    with open(fn_tss) as f, open(fn_active_tss, 'w') as o:
+        # chr1	11874	11874	NR_046018.2	+
+        for i in f:
+            line = i.split('\t')
+            chr_, tss, ts = line[0], line[1], line[3]
+            if ts in active_genes:
+                o.write(i)
+                gn = gtf_info.get(ts, {}).get('gene_name', ts)
+                active_tss.setdefault(chr_, []).append([tss, gn])
+    
+    
     # find the enhancer region
     logger.info(f'Finding enhancer region')
-    fno_enhancer, outstr3 = central(other_region, lcut)
+    fn_fantom, fn_association = [ref_fls[_] for _ in ['fantom', 'association']]
+    enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
     
-    if fno_enhancer == 1:
+    # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
+    fn_enhancer = f'{pwout}/eRNA/Enhancer.txt'
+    if enh_out:
+        with open(fn_enhancer, 'w') as o:
+            print('\n'.join(enh_out), file=o)
+    else:
+        logger.warning(f'No enhancer found')
         return 1
-    
-    out1 = os.path.join(out2_dir, "Enhancer.txt")
-    with open(out1, "w") as out1_file:
-        out1_file.write(outstr1)
 
-    sort_file(out1)
 
-    print("Finding closest genes...")
-    gene_id = {}
-    with open(gtf) as in9_file:
-        for line in in9_file:
-            gene = line.split()
-            if gene[0].startswith("chrUn") or gene[0].startswith("Un") or gene[2] != "exon":
+    # find closest gene for enhancer
+    fno_closest = f'{pwout}/intermediate/closest.txt'
+    cmd = f'bedtools closest -a {fn_enhancer} -b {fn_active_tss} -d > $fno_closest'
+    status = os.system(cmd)
+    if status:
+        logger.error(f'fail to run bedtools closest')
+        return 1
+
+    # process closest result
+    # last column will be the distance, if overlap, will be 0
+    res_closest = {}  # k = enhancer_info, v = {'close_gene': [], }
+    center_str = {} # key = each center_point, v = chr, center point, fantom
+    center_enhancer = {}  # k = each center point, v = whole enhancer info
+    with open(fno_closest) as f:
+        for i in f:
+            line = i[:-1].rsplit('\t', 6) # first 6 cols = enhancer info, then tss info [chr(col7), s, s , ts(col10), strand (col11)],  col12 = distance
+            distance = int(line[-1])
+            enhancer_info = line[0]
+            ts = line[-3]
+            res_closest.setdefault(enhancer_info, {'close_gene': [], 'distance': distance})
+            if distance == -1:
                 continue
-            gene[11] = gene[11].strip("\";")
-            gene[13] = gene[13].strip("\";")
-            gene_id[gene[11]] = gene[13]
-
-    active = os.path.join(inter_dir, "active_gene.txt")
-    active_gene = {}
-    with open(active) as in3_file:
-        for line in in3_file:
-            temp = line.split()
-            active_gene[temp[0]] = 1
-
-    active_tss_str = ""
-    with open(tss) as in4_file:
-        for line in in4_file:
-            temp = line.split("\t")
-            if temp[3] in active_gene:
-                active_tss_str += line
-
-    active_tss = os.path.join(inter_dir, "active_tss.txt")
-    with open(active_tss, "w") as out5_file:
-        out5_file.write(active_tss_str)
-
-    sort_file(active_tss)
-
-    closest_out = os.path.join(inter_dir, "closest.txt")
-    subprocess.run(f"bedtools closest -a {out1} -b {active_tss} -d > {closest_out}", shell=True, check=True)
-
-
-    # Initialize dictionaries
-    clos_gene = {}
-    distance = {}
-
-    center_str = {}
-    center_enhancer = {}
-
-    # Read and process the closest_out file
-    with open(closest_out, 'r') as infile:
-        for line in infile:
-            temp = line.strip().split('\t')
-            temp_str = "\t".join(temp[0:6])
-            if int(temp[11]) == -1:
-                if temp_str not in clos_gene:
-                    clos_gene[temp_str] = []
-                clos_gene[temp_str].append("NA")
-                distance[temp_str] = temp[11]
-                continue
-            if temp[9] in gene_id and gene_id[temp[9]]:
-                if temp_str not in clos_gene:
-                    clos_gene[temp_str] = []
-                clos_gene[temp_str].append(gene_id[temp[9]])
-                distance[temp_str] = temp[11]
-            else:
-                if temp_str not in clos_gene:
-                    clos_gene[temp_str] = []
-                clos_gene[temp_str].append(temp[9])
-                distance[temp_str] = temp[11]
+            gn = gtf_info.get(ts, {}).get('gene_name', ts)
+            res_closest[enhancer_info]['closest_gene'].append(gn)
+            res_closest[enhancer_info]['distance'] = distance
+            chr_, _, _, center_list, fantom_list, asso_list = enhancer_info.split('\t')
+            for icenter, ifantom in zip(center_lis.split(','), fantom_lis.split(',')):
+                k_center = f'{chr_}:{icenter}'
+                if k_center not in center_str:
+                    center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
+                    center_enhancer[k_center] = enhancer_info
             
-            if ',' in temp[3]:
-                temp1 = temp[3].split(',')
-                temp2 = temp[4].split(',')
-                for i in range(len(temp1)):
-                    key = f"{temp[0]}-{temp1[i]}"
-                    if key not in center_str:
-                        center_str[key] = f"{temp[0]}\t{temp1[i]}\t{temp2[i]}"
-                        center_enhancer[key] = temp_str
-            else:
-                key = f"{temp[0]}-{temp[3]}"
-                if key not in center_str:
-                    center_str[key] = f"{temp[0]}\t{temp[3]}\t{temp[4]}"
-                    center_enhancer[key] = temp_str
 
-    print("Finding associate genes within 50Kb...")
-    tss_chr = []
-    tss_pos = []
-    tss_gene = []
-
-    # Read active TSS file
-    with open(active_tss, 'r') as infile:
-        for line in infile:
-            temp = line.strip().split('\t')
-            if gene_id.get(temp[3]):
-                tss_chr.append(temp[0])
-                tss_pos.append(int(temp[1]))
-                tss_gene.append(gene_id[temp[3]])
-
-    # Initialize dictionaries for 50Kb proximity checks
-    tss50k = {}
-    etss50k = {}
-
-    wd = 50000  # Window size of 50Kb
-
-    # Process each enhancer
-    for enhancer in sorted(distance.keys()):
-        temp = enhancer.split('\t')
-        chr = temp[0]
-        start = int(temp[1])
-        end = int(temp[2])
-        
-        flag1 = 0
-        for i in range(len(tss_chr)):
-            if flag1 == 0 and chr != tss_chr[i]:
-                continue
-            if flag1 == 1 and chr != tss_chr[i]:
-                break
-            if chr == tss_chr[i]:
-                flag1 = 1
-                if tss_pos[i] > end and (tss_pos[i] - end) < wd:
-                    if enhancer not in etss50k or tss_gene[i] not in etss50k[enhancer]:
-                        if enhancer in tss50k:
-                            tss50k[enhancer] += f",{tss_gene[i]}"
-                        else:
-                            tss50k[enhancer] = tss_gene[i]
-                        if enhancer not in etss50k:
-                            etss50k[enhancer] = {}
-                        etss50k[enhancer][tss_gene[i]] = 1
-                if tss_pos[i] < start and (start - tss_pos[i]) < wd:
-                    if enhancer not in etss50k or tss_gene[i] not in etss50k[enhancer]:
-                        if enhancer in tss50k:
-                            tss50k[enhancer] += f",{tss_gene[i]}"
-                        else:
-                            tss50k[enhancer] = tss_gene[i]
-                        if enhancer not in etss50k:
-                            etss50k[enhancer] = {}
-                        etss50k[enhancer][tss_gene[i]] = 1
-
-
-    chr_4d = []
-    start_4d = []
-    end_4d = []
-    gene_4d = []
-    cell_4d = []
-    method_4d = []
-    pmid_4d = []
-    fd = {}
-    e4d = {}
-    cell_4d_map = {}
-    ecell_4d = {}
-    method_4d_map = {}
-    emethod_4d = {}
-    pmid_4d_map = {}
-    epmid_4d = {}
-
-    if genome not in ["ce10", "danRer10"]:
-        print("Finding associate genes in 4DGenome...")
-
-        with open(fdgenome, 'r') as file:
-            for line in file:
-                temp = line.strip().split('\t')
-                chr_4d.append(temp[0])
-                start_4d.append(temp[1])
-                end_4d.append(temp[2])
-                gene_4d.append(temp[6])
-                cell_4d.append(temp[7])
-                method_4d.append(temp[8])
-                pmid_4d.append(temp[9])
-
-        for enhancer in sorted(distance.keys()):
-            temp = enhancer.split('\t')
-            chr = temp[0]
-            start = int(temp[1])
-            end = int(temp[2])
-
-            flag1 = 0
-            for i in range(len(chr_4d)):
-                if flag1 == 0 and chr != chr_4d[i]:
-                    continue
-                if flag1 == 1 and chr != chr_4d[i]:
-                    break
-                if chr == chr_4d[i]:
-                    flag1 = 1
-                    if (start_4d[i] >= start and start_4d[i] <= end) or (end_4d[i] >= start and end_4d[i] <= end) or (start >= start_4d[i] and start <= end_4d[i]) or (end >= start_4d[i] and end <= end_4d[i]):
-                        temp = gene_4d[i].split(';')
-                        for gene in temp:
-                            if enhancer not in e4d or gene not in e4d[enhancer]:
-                                fd[enhancer] = fd.get(enhancer, '') + ("," if enhancer in fd else '') + gene
-                                e4d.setdefault(enhancer, {})[gene] = 1
-
-                        if enhancer not in ecell_4d or cell_4d[i] not in ecell_4d[enhancer]:
-                            cell_4d_map[enhancer] = cell_4d_map.get(enhancer, '') + ("," if enhancer in cell_4d_map else '') + cell_4d[i]
-                            ecell_4d.setdefault(enhancer, {})[cell_4d[i]] = 1
-
-                        if enhancer not in emethod_4d or method_4d[i] not in emethod_4d[enhancer]:
-                            method_4d_map[enhancer] = method_4d_map.get(enhancer, '') + ("," if enhancer in method_4d_map else '') + method_4d[i]
-                            emethod_4d.setdefault(enhancer, {})[method_4d[i]] = 1
-
-                        if enhancer not in epmid_4d or pmid_4d[i] not in epmid_4d[enhancer]:
-                            pmid_4d_map[enhancer] = pmid_4d_map.get(enhancer, '') + ("," if enhancer in pmid_4d_map else '') + pmid_4d[i]
-                            epmid_4d.setdefault(enhancer, {})[pmid_4d[i]] = 1
-
-    enhancer_id = 1
+    fn_4d = ref_fls['4d']
+    d_4d = {}
+    if fn_4d is not None:
+        # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
+        logger.info('Finding associate genes in 4DGenome...')
+        with open(fn_4d) as f:
+            # no header
+            for i in f:
+                line = i[:-1].split('\t')
+                chr_ = refine_chr(line[0])
+                d_4d.setdefault(chr_, []).append([line[_] for _ in [1, 2, 6, 7, 8, 9]]) #  s, e, gn, cell, method, pmid 
+    
+    tss50k = {} # window_active_genes = 50k
+    res_4d = {}
+    for enhancer_info in sorted(res_closest):
+        # closest_info = res_closest[enhancer_info]
+        chr_, start, end, center_list, fantom_list, asso_list = enhancer_info.split('\t')
+        for tss_pos, gn in active_tss[chr_]:
+            if (tss_pos > end and tss_pos - end < window_active_genes) or (tss_pos < strand and start - tss_pos < window_active_genes):
+                tss50k.setdefault(enhancer_info, set()).add(gn)
+                
+        if chr_ in d_4d:
+            for info_4d in d_4d[chr_]:
+                # s, e, gn, cell, method, pmid 
+                s_4d, e_4d, gn_list, cell, method, pmid = info_4d
+                if (start <= s_4d <= end) or (start <= e_4d <= end) or (s_4d <= start <= e_4d) or (s_4d <= end <= e_4d):  # there are overlap
+                    ires = res_4d.setdefault(enhancer_info, {'gn': set(), 'cell': set(), 'method': set(), 'pmid': set()})
+                    ires['gn'] |= set(gn_list.strip(';').split(';'))
+                    ires['cell'].add(cell)
+                    ires['method'].add(method)
+                    ires['pmid'].add(pmid)
+                    
+    # save to Enhancer.txt again
     enhancer_id_map = {}
-
-    outstr5 = "Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell/Tissue\tDetection_method\tPMID\tclosest_gene\tdistance\n"
-    for enhancer in sorted(distance.keys()):
-        temp_50k = tss50k.get(enhancer, "NA")
-
-        if genome not in ["ce10", "danRer10"]:
-            if enhancer in fd:
-                temp1_4d = fd[enhancer]
-                temp2_4d = cell_4d_map[enhancer]
-                temp3_4d = method_4d_map[enhancer]
-                temp4_4d = pmid_4d_map[enhancer]
+    enhancer_id = 1
+    with open(fn_enhancer, 'w') as o:
+        print("Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell\/Tissue\tDetection_method\tPMID\tclosest_gene\tdistance", file=o)
+        for enhancer_info in sorted(res_closest):
+            col_tss50k = tss50k.get(enhancer_info, ['NA'])
+            col_tss50k = ','.join(sorted(col_tss50k))
+            
+            info_4d = res_4d.get(enhancer_info, None)
+            if info_4d:
+                cols_4d = '\t'.join([info_4d[_] for _ in ['gn', 'cell', 'method', 'pmid']])
             else:
-                temp1_4d = "NA"
-                temp2_4d = "NA"
-                temp3_4d = "NA"
-                temp4_4d = "NA"
-            outstr5 += f"{enhancer_id}\t{enhancer}\t{temp_50k}\t{temp1_4d}\t{temp2_4d}\t{temp3_4d}\t{temp4_4d}\t{','.join(clos_gene[enhancer])}\t{distance[enhancer]}\n"
-        else:
-            outstr5 += f"{enhancer_id}\t{enhancer}\t{temp_50k}\tNA\tNA\tNA\tNA\t{','.join(clos_gene[enhancer])}\t{distance[enhancer]}\n"
-
-        enhancer_id_map[enhancer] = enhancer_id
-        enhancer_id += 1
-
-    with open(out1, 'w') as out_file:
-        out_file.write(outstr5)
-
-    outstr2 = ""
-    tempstr1 = ""
-    for center_key in sorted(center_str.keys()):
-        outstr2 += f"{center_str[center_key]}\t{enhancer_id_map[center_enhancer[center_key]]}\n"
-        if prior == 1:
-            temp = center_key.split('-')
-            tempstr1 += f"{temp[0]}\t{temp[1]}\t{temp[1]}\t{enhancer_id_map[center_enhancer[center_key]]}\tNA\t+\n"
-
-    out2 = os.path.join(out2_dir, "Enhancer_center.txt")
-    with open(out2, 'w') as out_file:
-        out_file.write(outstr2)
-    sort_file(out2)
-
-    out3 = os.path.join(out2_dir, "long_eRNA.txt")
-    if outstr3:
-        with open(out3, 'w') as out_file:
-            out_file.write(outstr3)
-        sort_file(out3)
-
-    temp_str = ""
-    temp_id = {}
-    line = 0
-    with open(out1, 'r') as in_file:
-        for line_num, line in enumerate(in_file):
-            if line_num == 0:
-                continue
-            temp = line.strip().split('\t')
-            temp_str += f"{temp[1]}\t{temp[2]}\t{temp[3]}\n"
-            temp_id[f"{temp[1]}-{temp[2]}-{temp[3]}"] = temp[0]
-
-    out4 = os.path.join(inter_dir, "Enhancer_temp.bed")
-    with open(out4, 'w') as out_file:
-        out_file.write(temp_str)
-
-    print("Detecting Enhancer change...")
-    if case_bed:
-        factor1 = []
-        factor2 = []
-        nffile = os.path.join(inter_dir, "nf.txt")
-        factor = {}
-        with open(nffile, 'r') as in_file:
-            for line in in_file:
-                temp = line.strip().split('\t')
-                factor[temp[0]] = temp[1]
-
-        count_str = {}
-        rep_str = ""
-
-        for rep in cond1:
-            temp1 = rep.rindex("/")
-            temp2 = rep.rindex(".")
-            temp3 = rep[temp1 + 1:temp2]
-
-            if temp3 in factor:
-                factor1.append(factor[temp3])
-            else:
-                print("input file name doesn't match the file name for pausing analysis!")
-                exit()
-
-            rep_str += f"\t{temp3}"
-            cov_temp = os.path.join(inter_dir, "cov_temp.bed")
-            cov_cmd1 = f"bedtools coverage -a {out4} -b {rep} > {cov_temp}"
-            subprocess.run(cov_cmd1, shell=True, check=True)
-            with open(cov_temp, 'r') as in_file:
-                for line in in_file:
-                    temp = line.strip().split()
-                    key = f"{temp[0]}-{temp[1]}-{temp[2]}"
-                    count_str.setdefault(key, []).append(temp[3])
-
-        for rep in cond2:
-            temp1 = rep.rindex("/")
-            temp2 = rep.rindex(".")
-            temp3 = rep[temp1 + 1:temp2]
-
-            if temp3 in factor:
-                factor2.append(factor[temp3])
-            else:
-                print("input file name doesn't match the file name for pausing analysis!")
-                exit()
-
-            rep_str += f"\t{temp3}"
-            cov_temp = os.path.join(inter_dir, "cov_temp.bed")
-            cov_cmd1 = f"bedtools coverage -a {out4} -b {rep} > {cov_temp}"
-            subprocess.run(cov_cmd1, shell=True, check=True)
-            with open(cov_temp, 'r') as in_file:
-                for line in in_file:
-                    temp = line.strip().split()
-                    key = f"{temp[0]}-{temp[1]}-{temp[2]}"
-                    count_str.setdefault(key, []).append(temp[3])
-
-        temp_count = 0
-        temp_str2 = "Enhancer_ID\tchr\tstart\tend"
-        for rep in cond1:
-            temp_str2 += f"\t{factor1[temp_count]}"
-            temp_count += 1
-        for rep in cond2:
-            temp_str2 += f"\t{factor2[temp_count]}"
-            temp_count += 1
-        temp_str2 += "\n"
-
-        for key in sorted(count_str.keys()):
-            temp_str2 += '\t'.join([temp_id[key], key.replace('-', '\t'), '\t'.join(count_str[key])])
-
-        out5 = os.path.join(out2_dir, "Enhancer_FPKM.txt")
-        with open(out5, 'w') as out_file:
-            out_file.write(temp_str2)
-        sort_file(out5)
-
-    outstr1 = ""
-    for item in key_str.keys():
-        outstr1 += f"{item}\t{key_str[item]}\n"
-
-    out6 = os.path.join(out2_dir, "Enhancer_associated_peak.txt")
-    with open(out6, 'w') as out_file:
-        out_file.write(outstr1)
-    sort_file(out6)
-
-    if prior == 1:
-        out7 = os.path.join(out2_dir, "Enhancer_candidate.bed")
-        with open(out7, 'w') as out_file:
-            out_file.write(tempstr1)
-        sort_file(out7)
-    import math
-
-    # Variables initialization
-    out_dir = "output_directory/"
-    enhcfile = out_dir + "eRNA/Enhancer_change.txt"
-    enhchange = {}
-    enhfdr = {}
-    flag23 = 0
-    temax = 0
-    emax = {}
-
-    # Reading the enhancer change file
-    with open(enhcfile, "r") as infile:
-        for line in infile:
-            line = line.strip()
-            flag23 += 1
-            if flag23 == 1:
-                continue
-            temp = line.split("\t")
-            if (temp[5] not in ["NA", "Inf", "-Inf"]) and (abs(float(temp[5])) > temax):
-                temax = abs(float(temp[5]))
-            if temp[5] == "Inf":
-                enhchange[temp[0]] = 1000
-                emax[temp[0]] = 1
-            elif temp[5] == "-Inf":
-                enhchange[temp[0]] = -1000
-                emax[temp[0]] = -1
-            else:
-                enhchange[temp[0]] = float(temp[5])
-            enhfdr[temp[0]] = temp[-1]
-
-    # Update emax values based on temax
-    for key in emax:
-        if emax[key] == 1:
-            emax[key] = temax
-        elif emax[key] == -1:
-            emax[key] = -temax
-
-    # Variables for the second part of the script
-    flag24 = 0
-    outstr24 = ""
-
-    # Define other required variables
-    weight = 0.5  # Example value, update accordingly
-    fdr = 0.05  # Example value, update accordingly
-    direction = 1  # Example value, update accordingly
-    dis_to_p = {}  # Example dictionary, update accordingly
-    tchange = {}  # Example dictionary, update accordingly
-    tfdr = {}  # Example dictionary, update accordingly
-    out1 = "output1.txt"  # Example filename, update accordingly
-
-    # Reading the output file and processing
-    with open(out1, "r") as infile:
-        for line in infile:
-            line = line.strip()
-            flag24 += 1
-            if flag24 == 1:
-                outstr24 += line + "\tFscore\tBscore\n"
-                continue
-            temp = line.split("\t")
-            score = 0
-
-            bscore = 0
-            if temp[0] in dis_to_p:
-                bscore = (weight * 2 / (1 + math.exp(0.0004054651 * dis_to_p[temp[0]])))
-
-            fscore = 0
-            if enhfdr[temp[0]] == "NA":
-                score = bscore
-            elif enhfdr[temp[0]] > fdr:
-                score = bscore
-            else:
-                temp1 = temp[6].split(',;')
-                f5 = {t: 1 for t in temp1}
-                wd = temp[7].split(',')
-                a4d = temp[8].split(',')
-                cl = temp[12]
-
-                f5gmax, wdgmax, a4dgmax, clgmax = 0, 0, 0, 0
-
-                if direction == 1:
-                    for key1 in f5:
-                        if key1 == "NA":
-                            continue
-                        if key1 not in tchange:
-                            continue
-                        if tfdr[key1] == "NA":
-                            continue
-                        if tfdr[key1] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[key1] > 0 and abs(tchange[key1]) > abs(f5gmax):
-                            f5gmax = tchange[key1]
-
-                    for i in range(len(wd)):
-                        if wd[i] == "NA":
-                            continue
-                        if tfdr[wd[i]] == "NA":
-                            continue
-                        if tfdr[wd[i]] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[wd[i]] > 0 and abs(tchange[wd[i]]) > abs(wdgmax):
-                            wdgmax = tchange[wd[i]]
-
-                    for i in range(len(a4d)):
-                        if a4d[i] == "NA":
-                            continue
-                        if a4d[i] not in tchange:
-                            continue
-                        if tfdr[a4d[i]] == "NA":
-                            continue
-                        if tfdr[a4d[i]] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[a4d[i]] > 0 and abs(tchange[a4d[i]]) > abs(a4dgmax):
-                            a4dgmax = tchange[a4d[i]]
-
-                    if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
-                        if enhchange[temp[0]] * tchange[cl] > 0:
-                            clgmax = tchange[cl]
-
-                    fscore = (enhchange[temp[0]] / temax) * ((f5gmax + wdgmax + a4dgmax + clgmax) / tgmax)
-
-                elif direction == -1:
-                    for key1 in f5:
-                        if key1 == "NA":
-                            continue
-                        if key1 not in tchange:
-                            continue
-                        if tfdr[key1] == "NA":
-                            continue
-                        if tfdr[key1] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[key1] < 0 and abs(tchange[key1]) > abs(f5gmax):
-                            f5gmax = tchange[key1]
-
-                    for i in range(len(wd)):
-                        if wd[i] == "NA":
-                            continue
-                        if tfdr[wd[i]] == "NA":
-                            continue
-                        if tfdr[wd[i]] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[wd[i]] < 0 and abs(tchange[wd[i]]) > abs(wdgmax):
-                            wdgmax = tchange[wd[i]]
-
-                    for i in range(len(a4d)):
-                        if a4d[i] == "NA":
-                            continue
-                        if a4d[i] not in tchange:
-                            continue
-                        if tfdr[a4d[i]] == "NA":
-                            continue
-                        if tfdr[a4d[i]] > fdr:
-                            continue
-                        if enhchange[temp[0]] * tchange[a4d[i]] < 0 and abs(tchange[a4d[i]]) > abs(a4dgmax):
-                            a4dgmax = tchange[a4d[i]]
-
-                    if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
-                        if enhchange[temp[0]] * tchange[cl] < 0:
-                            clgmax = tchange[cl]
-
-                    fscore = (-1) * (enhchange[temp[0]] / temax) * ((f5gmax + wdgmax + a4dgmax + clgmax) / tgmax)
-
+                cols_4d = 'NA\tNA\tNA\tNA'
+            
+            closest_info = res_closest.get(enhancer_info)
+            if closest_info:
+                col_closest = closest_info['closest_gene']
+                col_distance = str(closest_info['distance'])
+                if col_closest:
+                    col_closest = ','.join(sorted(col_closest))
                 else:
-                    for key1 in f5:
-                        if key1 == "NA":
-                            continue
-                        if key1 not in tchange:
-                            continue
-                        if tfdr[key1] == "NA":
-                            continue
-                        if tfdr[key1] > fdr:
-                            continue
-                        if abs(tchange[key1]) > abs(f5gmax):
-                            f5gmax = tchange[key1]
+                    col_closest = 'NA'
+            else:
+                col_closest,col_distance = 'NA', '-1'
+            print('\t'.join([enhancer_id, enhancer_info, col_tss_50k, cols_4d, col_closest, col_distance]))
+            enhancer_id_map[enhancer_info] = str(enhancer_id)
+            enhancer_id += 1
+            
+    # save center_str
+    # center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
+    fn_center = f'{pwout}/eRNA/Enhancer_cener.txt'
+    center_out = []
+    with open(fn_center, 'w') as o:
+        print('\t'.join(["chr","position","FONTOM5","Enhancer_ID"]), file=o)
+        for k_center, v in center_str.items():
+            enhancer_info = center_enhancer[k_center]
+            enhancer_id = enhancer_id_map[enhancer_info]
+            print(f'{v}\t{enhancer_id}', file=o)
+    
+    
+    # save long_eRNA
+    # "chr","start","end","strand"
+    fno_longerna = f'{pwout}/eRNA/long_eRNA.txt'
+    if lerna_out:
+        with open(fno_longerna, 'w') as o:
+            print('\t'.join(["chr","start","end","strand"]), file=o)
+            for i in lerna_out:
+                print('\t'.join(map(str, i)), file=o)
+    
+    
+    
+    
+    
+    # temp_str = ""
+    # temp_id = {}
+    # line = 0
+    # with open(out1, 'r') as in_file:
+    #     for line_num, line in enumerate(in_file):
+    #         if line_num == 0:
+    #             continue
+    #         temp = line.strip().split('\t')
+    #         temp_str += f"{temp[1]}\t{temp[2]}\t{temp[3]}\n"
+    #         temp_id[f"{temp[1]}-{temp[2]}-{temp[3]}"] = temp[0]
 
-                    for i in range(len(wd)):
-                        if wd[i] == "NA":
-                            continue
-                        if tfdr[wd[i]] == "NA":
-                            continue
-                        if tfdr[wd[i]] > fdr:
-                            continue
-                        if abs(tchange[wd[i]]) > abs(wdgmax):
-                            wdgmax = tchange[wd[i]]
+    # out4 = os.path.join(inter_dir, "Enhancer_temp.bed")
+    # with open(out4, 'w') as out_file:
+    #     out_file.write(temp_str)
 
-                    for i in range(len(a4d)):
-                        if a4d[i] == "NA":
-                            continue
-                        if a4d[i] not in tchange:
-                            continue
-                        if tfdr[a4d[i]] == "NA":
-                            continue
-                        if tfdr[a4d[i]] > fdr:
-                            continue
-                        if abs(tchange[a4d[i]]) > abs(a4dgmax):
-                            a4dgmax = tchange[a4d[i]]
+    # print("Detecting Enhancer change...")
+    # if case_bed:
+    #     factor1 = []
+    #     factor2 = []
+    #     nffile = os.path.join(inter_dir, "nf.txt")
+    #     factor = {}
+    #     with open(nffile, 'r') as in_file:
+    #         for line in in_file:
+    #             temp = line.strip().split('\t')
+    #             factor[temp[0]] = temp[1]
 
-                    if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
-                        clgmax = tchange[cl]
+    #     count_str = {}
+    #     rep_str = ""
 
-                    fscore = (abs(enhchange[temp[0]]) / temax) * ((abs(f5gmax) + abs(wdgmax) + abs(a4dgmax) + abs(clgmax)) / tgmax)
+    #     for rep in cond1:
+    #         temp1 = rep.rindex("/")
+    #         temp2 = rep.rindex(".")
+    #         temp3 = rep[temp1 + 1:temp2]
 
-            score = bscore
-            outstr24 += f"{line}\t{fscore}\t{bscore/weight}\n"
+    #         if temp3 in factor:
+    #             factor1.append(factor[temp3])
+    #         else:
+    #             print("input file name doesn't match the file name for pausing analysis!")
+    #             exit()
 
-    # Writing the output
-    with open(out1, "w") as outfile:
-        outfile.write(outstr24)
+    #         rep_str += f"\t{temp3}"
+    #         cov_temp = os.path.join(inter_dir, "cov_temp.bed")
+    #         cov_cmd1 = f"bedtools coverage -a {out4} -b {rep} > {cov_temp}"
+    #         subprocess.run(cov_cmd1, shell=True, check=True)
+    #         with open(cov_temp, 'r') as in_file:
+    #             for line in in_file:
+    #                 temp = line.strip().split()
+    #                 key = f"{temp[0]}-{temp[1]}-{temp[2]}"
+    #                 count_str.setdefault(key, []).append(temp[3])
+
+    #     for rep in cond2:
+    #         temp1 = rep.rindex("/")
+    #         temp2 = rep.rindex(".")
+    #         temp3 = rep[temp1 + 1:temp2]
+
+    #         if temp3 in factor:
+    #             factor2.append(factor[temp3])
+    #         else:
+    #             print("input file name doesn't match the file name for pausing analysis!")
+    #             exit()
+
+    #         rep_str += f"\t{temp3}"
+    #         cov_temp = os.path.join(inter_dir, "cov_temp.bed")
+    #         cov_cmd1 = f"bedtools coverage -a {out4} -b {rep} > {cov_temp}"
+    #         subprocess.run(cov_cmd1, shell=True, check=True)
+    #         with open(cov_temp, 'r') as in_file:
+    #             for line in in_file:
+    #                 temp = line.strip().split()
+    #                 key = f"{temp[0]}-{temp[1]}-{temp[2]}"
+    #                 count_str.setdefault(key, []).append(temp[3])
+
+    #     temp_count = 0
+    #     temp_str2 = "Enhancer_ID\tchr\tstart\tend"
+    #     for rep in cond1:
+    #         temp_str2 += f"\t{factor1[temp_count]}"
+    #         temp_count += 1
+    #     for rep in cond2:
+    #         temp_str2 += f"\t{factor2[temp_count]}"
+    #         temp_count += 1
+    #     temp_str2 += "\n"
+
+    #     for key in sorted(count_str.keys()):
+    #         temp_str2 += '\t'.join([temp_id[key], key.replace('-', '\t'), '\t'.join(count_str[key])])
+
+    #     out5 = os.path.join(out2_dir, "Enhancer_FPKM.txt")
+    #     with open(out5, 'w') as out_file:
+    #         out_file.write(temp_str2)
+    #     sort_file(out5)
+
+    # outstr1 = ""
+    # for item in key_str.keys():
+    #     outstr1 += f"{item}\t{key_str[item]}\n"
+
+    # out6 = os.path.join(out2_dir, "Enhancer_associated_peak.txt")
+    # with open(out6, 'w') as out_file:
+    #     out_file.write(outstr1)
+    # sort_file(out6)
+
+    # if prior == 1:
+    #     out7 = os.path.join(out2_dir, "Enhancer_candidate.bed")
+    #     with open(out7, 'w') as out_file:
+    #         out_file.write(tempstr1)
+    #     sort_file(out7)
+    # import math
+
+    # # Variables initialization
+    # out_dir = "output_directory/"
+    # enhcfile = out_dir + "eRNA/Enhancer_change.txt"
+    # enhchange = {}
+    # enhfdr = {}
+    # flag23 = 0
+    # temax = 0
+    # emax = {}
+
+    # # Reading the enhancer change file
+    # with open(enhcfile, "r") as infile:
+    #     for line in infile:
+    #         line = line.strip()
+    #         flag23 += 1
+    #         if flag23 == 1:
+    #             continue
+    #         temp = line.split("\t")
+    #         if (temp[5] not in ["NA", "Inf", "-Inf"]) and (abs(float(temp[5])) > temax):
+    #             temax = abs(float(temp[5]))
+    #         if temp[5] == "Inf":
+    #             enhchange[temp[0]] = 1000
+    #             emax[temp[0]] = 1
+    #         elif temp[5] == "-Inf":
+    #             enhchange[temp[0]] = -1000
+    #             emax[temp[0]] = -1
+    #         else:
+    #             enhchange[temp[0]] = float(temp[5])
+    #         enhfdr[temp[0]] = temp[-1]
+
+    # # Update emax values based on temax
+    # for key in emax:
+    #     if emax[key] == 1:
+    #         emax[key] = temax
+    #     elif emax[key] == -1:
+    #         emax[key] = -temax
+
+    # # Variables for the second part of the script
+    # flag24 = 0
+    # outstr24 = ""
+
+    # # Define other required variables
+    # weight = 0.5  # Example value, update accordingly
+    # fdr = 0.05  # Example value, update accordingly
+    # direction = 1  # Example value, update accordingly
+    # dis_to_p = {}  # Example dictionary, update accordingly
+    # tchange = {}  # Example dictionary, update accordingly
+    # tfdr = {}  # Example dictionary, update accordingly
+    # out1 = "output1.txt"  # Example filename, update accordingly
+
+    # # Reading the output file and processing
+    # with open(out1, "r") as infile:
+    #     for line in infile:
+    #         line = line.strip()
+    #         flag24 += 1
+    #         if flag24 == 1:
+    #             outstr24 += line + "\tFscore\tBscore\n"
+    #             continue
+    #         temp = line.split("\t")
+    #         score = 0
+
+    #         bscore = 0
+    #         if temp[0] in dis_to_p:
+    #             bscore = (weight * 2 / (1 + math.exp(0.0004054651 * dis_to_p[temp[0]])))
+
+    #         fscore = 0
+    #         if enhfdr[temp[0]] == "NA":
+    #             score = bscore
+    #         elif enhfdr[temp[0]] > fdr:
+    #             score = bscore
+    #         else:
+    #             temp1 = temp[6].split(',;')
+    #             f5 = {t: 1 for t in temp1}
+    #             wd = temp[7].split(',')
+    #             a4d = temp[8].split(',')
+    #             cl = temp[12]
+
+    #             f5gmax, wdgmax, a4dgmax, clgmax = 0, 0, 0, 0
+
+    #             if direction == 1:
+    #                 for key1 in f5:
+    #                     if key1 == "NA":
+    #                         continue
+    #                     if key1 not in tchange:
+    #                         continue
+    #                     if tfdr[key1] == "NA":
+    #                         continue
+    #                     if tfdr[key1] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[key1] > 0 and abs(tchange[key1]) > abs(f5gmax):
+    #                         f5gmax = tchange[key1]
+
+    #                 for i in range(len(wd)):
+    #                     if wd[i] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[wd[i]] > 0 and abs(tchange[wd[i]]) > abs(wdgmax):
+    #                         wdgmax = tchange[wd[i]]
+
+    #                 for i in range(len(a4d)):
+    #                     if a4d[i] == "NA":
+    #                         continue
+    #                     if a4d[i] not in tchange:
+    #                         continue
+    #                     if tfdr[a4d[i]] == "NA":
+    #                         continue
+    #                     if tfdr[a4d[i]] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[a4d[i]] > 0 and abs(tchange[a4d[i]]) > abs(a4dgmax):
+    #                         a4dgmax = tchange[a4d[i]]
+
+    #                 if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
+    #                     if enhchange[temp[0]] * tchange[cl] > 0:
+    #                         clgmax = tchange[cl]
+
+    #                 fscore = (enhchange[temp[0]] / temax) * ((f5gmax + wdgmax + a4dgmax + clgmax) / tgmax)
+
+    #             elif direction == -1:
+    #                 for key1 in f5:
+    #                     if key1 == "NA":
+    #                         continue
+    #                     if key1 not in tchange:
+    #                         continue
+    #                     if tfdr[key1] == "NA":
+    #                         continue
+    #                     if tfdr[key1] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[key1] < 0 and abs(tchange[key1]) > abs(f5gmax):
+    #                         f5gmax = tchange[key1]
+
+    #                 for i in range(len(wd)):
+    #                     if wd[i] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[wd[i]] < 0 and abs(tchange[wd[i]]) > abs(wdgmax):
+    #                         wdgmax = tchange[wd[i]]
+
+    #                 for i in range(len(a4d)):
+    #                     if a4d[i] == "NA":
+    #                         continue
+    #                     if a4d[i] not in tchange:
+    #                         continue
+    #                     if tfdr[a4d[i]] == "NA":
+    #                         continue
+    #                     if tfdr[a4d[i]] > fdr:
+    #                         continue
+    #                     if enhchange[temp[0]] * tchange[a4d[i]] < 0 and abs(tchange[a4d[i]]) > abs(a4dgmax):
+    #                         a4dgmax = tchange[a4d[i]]
+
+    #                 if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
+    #                     if enhchange[temp[0]] * tchange[cl] < 0:
+    #                         clgmax = tchange[cl]
+
+    #                 fscore = (-1) * (enhchange[temp[0]] / temax) * ((f5gmax + wdgmax + a4dgmax + clgmax) / tgmax)
+
+    #             else:
+    #                 for key1 in f5:
+    #                     if key1 == "NA":
+    #                         continue
+    #                     if key1 not in tchange:
+    #                         continue
+    #                     if tfdr[key1] == "NA":
+    #                         continue
+    #                     if tfdr[key1] > fdr:
+    #                         continue
+    #                     if abs(tchange[key1]) > abs(f5gmax):
+    #                         f5gmax = tchange[key1]
+
+    #                 for i in range(len(wd)):
+    #                     if wd[i] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] == "NA":
+    #                         continue
+    #                     if tfdr[wd[i]] > fdr:
+    #                         continue
+    #                     if abs(tchange[wd[i]]) > abs(wdgmax):
+    #                         wdgmax = tchange[wd[i]]
+
+    #                 for i in range(len(a4d)):
+    #                     if a4d[i] == "NA":
+    #                         continue
+    #                     if a4d[i] not in tchange:
+    #                         continue
+    #                     if tfdr[a4d[i]] == "NA":
+    #                         continue
+    #                     if tfdr[a4d[i]] > fdr:
+    #                         continue
+    #                     if abs(tchange[a4d[i]]) > abs(a4dgmax):
+    #                         a4dgmax = tchange[a4d[i]]
+
+    #                 if cl in tchange and tfdr[cl] != "NA" and tfdr[cl] <= fdr:
+    #                     clgmax = tchange[cl]
+
+    #                 fscore = (abs(enhchange[temp[0]]) / temax) * ((abs(f5gmax) + abs(wdgmax) + abs(a4dgmax) + abs(clgmax)) / tgmax)
+
+    #         score = bscore
+    #         outstr24 += f"{line}\t{fscore}\t{bscore/weight}\n"
+
+    # # Writing the output
+    # with open(out1, "w") as outfile:
+    #     outfile.write(outstr24)
 
 
 if __name__ == "__main__":

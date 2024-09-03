@@ -93,7 +93,7 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
         logger.addHandler(fh_file)
     return logger
 
-logger = getlogger()
+logger = getlogger('eRNA.run.log', 'NRSA')
 
 def getarg():
     import argparse as arg
@@ -107,7 +107,7 @@ def getarg():
 
     # ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
     ps.add_argument('-cutoff', '-c', help="""distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)""", type=int, default=400)
-    ps.add_argument('-distance', 'd', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
+    ps.add_argument('-distance', '-d', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-le', '-long_ena', help="""length cutoff for long-eRNA identification (bp, default: 10000)""", type=int, default=10000)
     ps.add_argument('-filter', '-f', help="""whether to filter for enhancers: 0 (not filter) or 1 (filter), deflault: 1""", choices=[0, 1], default=1)
     ps.add_argument('-dtss', help="""if filter enhancers, the minimum distance from enhancer to TSS (Transcription Start Site) (bp, default: 2000)""", type=int, default=2000)
@@ -140,6 +140,8 @@ def main():
     fn_gtf = args.gtf
     analysis.pwout_raw = args_d.get('pwout_raw', pwout)
 
+    status = 0
+    logger.debug('start running')
     ref_fls = get_ref_erna(args.organism)
     if ref_fls is None:
         logger.error("Error encountered while retrieving reference files")
@@ -175,6 +177,7 @@ def main():
     
     # make homder tags
     bed_list = ' '.join([_[1] for _ in in1 + in2])
+    logger.info('makeTagDirectory...')
     cmd_homer = f'makeTagDirectory {pw_homer} -format bed -forceBED  {bed_list}'
     status = os.system(cmd_homer)
     if status:
@@ -182,6 +185,7 @@ def main():
         return status
     
     # find peaks
+    logger.info(f'Find Peaks...')
     fn_peak_gtf, fn_peak_txt = f'{pwout}/intermediate/trascript.txt', f'{pwout}/intermediate/trascript.gtf'
     cmd_findpeaks = f'findPeaks {pw_homer} -style groseq -o {fn_peak_txt} -gtf {fn_peak_gtf}'
     status = os.system(cmd_findpeaks)
@@ -224,6 +228,7 @@ def main():
 
     # load active genes
     # 2 columns, col2 = ts, col2 = gn
+    logger.debug('loading active TSS')
     fn_active_genes = f'{pwout}/intermediate/active_gene.txt'
     fn_active_tss = f'{pwout}/intermediate/active_tss.txt'
     with open(fn_active_genes) as f:
@@ -257,6 +262,7 @@ def main():
 
 
     # find closest gene for enhancer
+    logger.info(f'Finding closest TSS for enhancer')
     fno_closest = f'{pwout}/intermediate/closest.txt'
     cmd = f'bedtools closest -a {fn_enhancer} -b {fn_active_tss} -d > $fno_closest'
     status = os.system(cmd)
@@ -266,6 +272,7 @@ def main():
 
     # process closest result
     # last column will be the distance, if overlap, will be 0
+    logger.debug('processing bedtools closest results')
     res_closest = {}  # k = enhancer_info, v = {'close_gene': [], }
     center_str = {} # key = each center_point, v = chr, center point, fantom
     center_enhancer = {}  # k = each center point, v = whole enhancer info
@@ -293,7 +300,6 @@ def main():
     d_4d = {}
     if fn_4d is not None:
         # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
-        logger.info('Finding associate genes in 4DGenome...')
         with open(fn_4d) as f:
             # no header
             for i in f:
@@ -301,6 +307,7 @@ def main():
                 chr_ = refine_chr(line[0])
                 d_4d.setdefault(chr_, []).append([line[_] for _ in [1, 2, 6, 7, 8, 9]]) #  s, e, gn, cell, method, pmid 
     
+    logger.info(f'Fiinding associated genes within 50kb and 4DGenome')
     tss50k = {} # window_active_genes = 50k
     res_4d = {}
     for enhancer_info in sorted(res_closest):
@@ -325,7 +332,7 @@ def main():
     enhancer_id_map = {}
     enhancer_id = 1
     with open(fn_enhancer, 'w') as o:
-        print("Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell\/Tissue\tDetection_method\tPMID\tclosest_gene\tdistance", file=o)
+        print("Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell_Tissue\tDetection_method\tPMID\tclosest_gene\tdistance", file=o)
         for enhancer_info in sorted(res_closest):
             col_tss50k = tss50k.get(enhancer_info, ['NA'])
             col_tss50k = ','.join(sorted(col_tss50k))

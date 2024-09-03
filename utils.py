@@ -119,7 +119,7 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         fh_file.name = 'file'
         logger.addHandler(fh_file)
     return logger
-logger = getlogger('NRSA.run.log', 'NRSA')
+logger = getlogger(logger_name='NRSA')
 
 bases_set = set('ATGCatgc')
 def refine_chr(chr_):
@@ -249,8 +249,6 @@ def get_ref_erna(organism, fn_gtf=None):
     ref_files["gtf"] = fn_gtf or os.path.join(pw_ref, organism, f"RefSeq-{organism}.gtf")
 
     ref_files["fa"] = os.path.join(pw_fa, organism, f"{organism}.fa")
-
-    ref_files["fdgenome"] = os.path.join(pw_annotation,  f"4DGenome-{organism}.txt")
     
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
@@ -271,7 +269,8 @@ def get_ref_erna(organism, fn_gtf=None):
         ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
 
     # validite file existence
-    for key, value in ref_files[organism].items():
+    code = 0
+    for key, value in ref_files.items():
         if not os.path.exists(value):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'
@@ -2157,7 +2156,7 @@ def gtf_compare(gtf_info, fn_peak_gtf):
             # trans_len += its_info['end'] - its_info['start'] + 1
             # its_l.add(its)
             if overlap > 0:
-                ts_new_with_overlap.append(its)
+                ts_new_with_overlap.add(its)
         # if overlap_sum >= 0.1 * trans_len and overlap_sum <= 0.5 * ref_gene_len:
         #     divergent.setdefault(ts, []).append(its)
     ts_new_no_overlap -= ts_new_with_overlap
@@ -2312,7 +2311,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 iregion['asso_list'].append(enh_sites[chr_][center_pos] if center_pos in enh_sites[chr_] else 'NA')
                 
                 len_minus_region = e_minus - s_minus
-                if if len_minus_region > thres_long_eRNA:
+                if len_minus_region > thres_long_eRNA:
                     lerna_out.add([chr_, s_minus, e_minus, '-'])
                 
             # plus region is longeRNA

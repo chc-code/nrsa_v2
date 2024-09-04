@@ -140,6 +140,7 @@ def main():
     # pri(0,1), peak (file), 
     # lk (pp, gb, pindex), dir (1, -1, 0), wt (weight), fdr (cutoff)
     pwout = args.pwout
+    pwout = os.path.realpath(pwout)
     fn_gtf = args.gtf
     pwout_raw = args_d.get('pwout_raw', pwout)
 
@@ -149,7 +150,7 @@ def main():
     if ref_fls is None:
         logger.error("Error encountered while retrieving reference files")
         status = 1
-        return
+        return 1
 
 
     folders = ['eRNA', 'intermediate']
@@ -244,10 +245,12 @@ def main():
         with open(fn_pkl_other_region, 'rb') as f:
             other_region = pickle.load(f)
     else:
-        logger.debug('gtf_compare')
+        logger.info('gtf_compare')
         other_genes = gtf_compare(gtf_info, fn_peak_gtf) # the transcript without overlap with refseq gtf
-        other_region = get_other_region(other_genes, fn_peak_txt)
-    
+        other_region = get_other_region(other_genes, fn_peak_txt) # is a list
+        logger.debug('dump other region')
+        with open(fn_pkl_other_region, 'wb') as o:
+            pickle.dump(other_region, o)
     
     
     
@@ -421,10 +424,12 @@ def main():
     # the chrom patter is different for this file and the raw bed file,
     # to run bedtools coverage, need to convert the refined chr back
     # 4104-AW-1_sorted_rRNArm-F4q10.chr_map.pkl
+    
+    logger.debug('loading the chr_map to previous raw bed files')
     fn_lb = in1[0][0] # use the first file as the fn_lb
     fn_chr_map = f'{pwout_raw}/bed/{fn_lb}.chr_map.pkl'
     with open(fn_chr_map, 'rb') as f:
-        chr_map_to_raw_bed = pickle.looad(f)
+        chr_map_to_raw_bed = pickle.load(f)
     
     chr_not_converted = set()
     with open(fn_enhancer) as f, open(fn_enhancer_short, 'w') as o:
@@ -440,7 +445,8 @@ def main():
                 chr_raw = chr_
                 chr_not_converted.add(chr_)
             enhancer_id = line[0]
-            print(f'{chr_raw}\t{k_enhancer}', file=o)
+            k_enhancer = f'{chr_raw}\t{k_enhancer}'
+            print(k_enhancer, file=o)
             k_enhancer_map[k_enhancer] = enhancer_id
     
     if len(chr_not_converted) > 0:
@@ -467,21 +473,28 @@ def main():
     fls_in = in1 + in2
     enhancer_count = {}  # key = enhancer info, chr, start, end, v = list of number,  length is same as sample number
     n_sam = n_ctrl + n_case
-    sam_idx = 0
+    sam_idx = -1
     logger.debug(f'Getting enhancer read count...')
     for fn_lb, fn_bed in fls_in:
         sam_idx += 1
         fn_coverage_res = f'{pwout}/intermediate/enhancer_cov.{fn_lb}.bed'
-        cmd = f'bedtools coverage -a {fn_enhancer_short} -b {fn_bed} -counts -sorted > {fn_coverage_res}'
-        logger.debug(cmd)
-        retcode = run_shell(cmd, echo=True)
-        if retcode:
-            return 1
-        
+        if demo and os.path.exists(fn_coverage_res):
+            logger.debug(f'skip bedtools coverage due to demo mode')
+        else:
+            cmd = f'bedtools coverage -a {fn_enhancer_short} -b {fn_bed} -counts -sorted > {fn_coverage_res}'
+            logger.debug(cmd)
+            retcode = run_shell(cmd, echo=True)
+            if retcode:
+                return 1
+            
         # process
         with open(fn_coverage_res) as f:
             for i in f:
-                k_enhancer, ict = i[:-1].rsplit('\t', 1)
+                try:
+                    k_enhancer, ict = i[:-1].rsplit('\t', 1)
+                except:
+                    logger.error(f'invalid coverage line: {i[:-1]}')
+                    sys.exit(1)
                 if k_enhancer not in enhancer_count:
                     enhancer_count[k_enhancer] = ['0' for _ in range(n_sam)]
                 enhancer_count[k_enhancer][sam_idx] = ict

@@ -271,6 +271,8 @@ def get_ref_erna(organism, fn_gtf=None):
     # validite file existence
     code = 0
     for key, value in ref_files.items():
+        if not value:
+            continue
         if not os.path.exists(value):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'

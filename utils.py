@@ -1348,7 +1348,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     skip_filtering = islongerna # skip if islongeRNA
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
     
-    if not islongeRNA:
+    if not islongerna:
         data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
     
     data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R

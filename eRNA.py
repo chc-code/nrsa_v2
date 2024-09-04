@@ -187,7 +187,7 @@ def main():
             logger.error("Error encountered while creating tag directory")
             return status
 
-        fn_peak_txt, fn_peak_gtf = f'{pwout}/intermediate/trascript.txt', f'{pwout}/intermediate/trascript.gtf'
+        fn_peak_txt, fn_peak_gtf = f'{pwout}/intermediate/transcript.txt', f'{pwout}/intermediate/transcript.gtf'
 
         # find peaks
         logger.info(f'Find Peaks...')

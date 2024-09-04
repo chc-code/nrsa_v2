@@ -265,7 +265,8 @@ def get_ref_erna(organism, fn_gtf=None):
     
     if ref_files['fantom']:
         ref_files["fantom"] = os.path.join(pw_annotation, ref_files["fantom"])
-        ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
+        if ref_files['association']:
+            ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
 
     # validite file existence
     code = 0

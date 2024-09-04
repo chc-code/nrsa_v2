@@ -422,7 +422,7 @@ def main():
     # to run bedtools coverage, need to convert the refined chr back
     # 4104-AW-1_sorted_rRNArm-F4q10.chr_map.pkl
     fn_lb = in1[0][0] # use the first file as the fn_lb
-    fn_chr_map = f'{pw_out_raw}/bed/{fn_lb}.chr_map.pkl'
+    fn_chr_map = f'{pwout_raw}/bed/{fn_lb}.chr_map.pkl'
     with open(fn_chr_map, 'rb') as f:
         chr_map_to_raw_bed = pickle.looad(f)
     

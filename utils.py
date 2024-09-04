@@ -1536,7 +1536,7 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     n_sam = rep1 + rep2
     
     # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2, , islongerna=islongerna)
+    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2, islongerna=islongerna)
 
     # get the normalized data
     n_extra_cols = 4 # chr, start, end, strand
@@ -2210,6 +2210,7 @@ def get_other_region(other_genes, fn_peak_txt):
                 line[1] = refine_chr(line[1])  # line[1] is chr
                 line[2], line[3] = int(line[2]), int(line[3])
                 regions.append(line[1:5])
+    logger.debug(f'input other_genes = {len(other_genes)}, regions added info = {len(regions)}')
     return regions
 
 

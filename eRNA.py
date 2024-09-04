@@ -252,8 +252,15 @@ def main():
         with open(fn_pkl_other_region, 'wb') as o:
             pickle.dump(other_region, o)
     
-    
-    
+    # other regions, [chr, s, e, strand], s and e are int
+    # this list is exactly the same as perl code
+    fn_other_region = f'{pwout}/intermediate/eRNA.other_region.txt'
+    if not os.path.exists(fn_other_region):
+        other_region = sorted(other_region, key=lambda x: (x[0], x[1]))
+        tmp = ['\t'.join(map(str, i)) for i in other_region]
+        with open(fn_other_region, 'w') as o:
+            print('\n'.join(tmp), file=o)
+
     logger.debug(f'other regions, n = {len(other_region)}')
 
     # load active genes

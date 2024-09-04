@@ -1814,20 +1814,24 @@ def process_gtf(fn_gtf, pwout):
     res_raw = {}  # k1 = gene name, k2 = transcript_id, v = {'chr': '', 'strand': '', 'gene_id': '', 'gene_name': '', 'start': 0, 'end': 0}
     
     with gzip.open(fn_gtf, 'rt') if fn_gtf.endswith('.gz') else open(fn_gtf) as f:
-        for i in f:
+        while True:
+            i = f.readline()
             if i[0] != '#' or not i:
                 break
+        f.seek(f.tell() - len(i))
         for i in f:
             line = i.strip().split('\t')
             # chr1    hg19_ncbiRefSeq    exon    66999252    66999355    0.000000    +    .    gene_id "NM_001308203.1"; transcript_id "NM_001308203.1"; gene_name "SGIP1";
             # 1       ensembl_havana  gene    11869   14412   .       +       .       gene_id "ENSG00000223972"; gene_version "4"; gene_name "DDX11L1"; gene_source "ensembl_havana"; gene_biotype "pseudogene";
             line_err = None
             try:
-                chr_, start, end, strand, attribute_raw = [line[_] for _ in [gtf_col_idx[_] for _ in ['chr', 'start', 'end', 'strand', 'attribute']]]
+                chr_, region_type, start, end, strand, attribute_raw = [line[_] for _ in [gtf_col_idx[_] for _ in ['chr', 'feature', 'start', 'end', 'strand', 'attribute']]]
                 start = int(start)
                 end = int(end)
             except:
                 line_err = 'invalid_line_format'
+            if region_type != 'exon':
+                continue
             if strand not in {'+', '-'}:
                 line_err = 'invalid_strand'
             chr_ = refine_chr(chr_)

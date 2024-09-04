@@ -541,7 +541,7 @@ def main(args):
             # unkown_transcript += 1
             # unkown_transcript_list.append(k)
             continue
-        if v['end'] - v['start'] + 1 >= min_gene_len:
+        if v['end'] - v['start'] + 1 > min_gene_len: # not include if len is 1000 (min_gene_len)
             gtf_info_new[k] = add_value_to_gtf(v, pro_up, pro_down, gb_down_distance) 
             if benchmode:
                 ct += 1

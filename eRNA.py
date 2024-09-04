@@ -4,6 +4,7 @@
 import os, sys
 import re
 import traceback
+import pickle
 
 # global var
 bin_dir = os.path.dirname(os.path.realpath(__file__))
@@ -178,6 +179,7 @@ def main():
     
     # make homder tags
     # logger.info('modify here, uncomment')
+    fn_peak_txt, fn_peak_gtf = f'{pwout}/intermediate/transcript.txt', f'{pwout}/intermediate/transcript.gtf'
     if not (demo and os.path.exists(f'{pw_homer}/tagInfo.txt')):
         bed_list = ' '.join([_[1] for _ in in1 + in2])
         logger.info('makeTagDirectory...')
@@ -186,8 +188,6 @@ def main():
         if status:
             logger.error("Error encountered while creating tag directory")
             return status
-
-        fn_peak_txt, fn_peak_gtf = f'{pwout}/intermediate/transcript.txt', f'{pwout}/intermediate/transcript.gtf'
 
         # find peaks
         logger.info(f'Find Peaks...')
@@ -232,13 +232,25 @@ def main():
     logger.debug('process gtf')
     gtf_info, fn_tss, fn_tss_tts, err = process_gtf(ref_fls['gtf'], pwout)
     logger.debug('gtf info loaded')
+    fn_enhancer_raw = f'{pwout}/eRNA/Enhancer.raw.txt'
     fn_enhancer = f'{pwout}/eRNA/Enhancer.txt'
 
 
     # logger.info('modify here, uncomment')
     
-    other_genes = gtf_compare(gtf_info, fn_peak_gtf) # the transcript without overlap with refseq gtf
-    other_region = get_other_region(other_genes, fn_peak_txt)
+    fn_pkl_other_region = f'{pwout}/intermediate/eRNA.other_region.pkl'
+    if demo and os.path.exists(fn_pkl_other_region):
+        logger.debug(f'loading previous gtf_compare results: {fn_pkl_other_region}')
+        with open(fn_pkl_other_region, 'rb') as f:
+            other_region = pickle.load(f)
+    else:
+        logger.debug('gtf_compare')
+        other_genes = gtf_compare(gtf_info, fn_peak_gtf) # the transcript without overlap with refseq gtf
+        other_region = get_other_region(other_genes, fn_peak_txt)
+    
+    
+    
+    
     logger.debug(f'other regions, n = {len(other_region)}')
 
     # load active genes
@@ -272,20 +284,20 @@ def main():
     
     # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
     if enh_out:
-        with open(fn_enhancer, 'w') as o:
+        with open(fn_enhancer_raw, 'w') as o:
             print('\n'.join(enh_out), file=o)
     else:
         logger.warning(f'No enhancer found')
         return 1
 
-    status = sort_bed_like_file(fn_enhancer)
+    status = sort_bed_like_file(fn_enhancer_raw)
     if status:
         return 1
 
     # find closest gene for enhancer
     logger.info(f'Finding closest TSS for enhancer')
     fno_closest = f'{pwout}/intermediate/closest.txt'
-    cmd = f'bedtools closest -a {fn_enhancer} -b {fn_active_tss} -d > {fno_closest}'
+    cmd = f'bedtools closest -a {fn_enhancer_raw} -b {fn_active_tss} -d > {fno_closest}'
     status = run_shell(cmd, echo=True)
     if status:
         logger.error(f'fail to run bedtools closest')
@@ -316,7 +328,7 @@ def main():
                 if k_center not in center_str:
                     center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
                     center_enhancer[k_center] = enhancer_info
-            
+    logger.debug(f'enhancer_closest gene, n = {len(res_closest)}, center_count = {len(center_enhancer)}')
 
     fn_4d = ref_fls['4d']
     d_4d = {}
@@ -377,7 +389,7 @@ def main():
                     col_closest = 'NA'
             else:
                 col_closest,col_distance = 'NA', '-1'
-            print('\t'.join([str(enhancer_id), enhancer_info, col_tss50k, cols_4d, col_closest, col_distance]))
+            print('\t'.join([str(enhancer_id), enhancer_info, col_tss50k, cols_4d, col_closest, col_distance]), file=o)
             enhancer_id_map[enhancer_info] = str(enhancer_id)
             enhancer_id += 1
             
@@ -405,14 +417,34 @@ def main():
     # enhancer region short
     fn_enhancer_short = f'{pwout}/intermediate/Enhancer_temp.bed'
     k_enhancer_map = {}
+    
+    # the chrom patter is different for this file and the raw bed file,
+    # to run bedtools coverage, need to convert the refined chr back
+    # 4104-AW-1_sorted_rRNArm-F4q10.chr_map.pkl
+    fn_lb = in1[0][0] # use the first file as the fn_lb
+    fn_chr_map = f'{pw_out_raw}/bed/{fn_lb}.chr_map.pkl'
+    with open(fn_chr_map, 'rb') as f:
+        chr_map_to_raw_bed = pickle.looad(f)
+    
+    chr_not_converted = set()
     with open(fn_enhancer) as f, open(fn_enhancer_short, 'w') as o:
         f.readline()
         for i in f:
             line = i.split('\t', 4)
-            k_enhancer = '\t'.join(line[1:4])
+            # Enhancer_ID	chr	start	end	center
+            k_enhancer = '\t'.join(line[2:4])
+            chr_ = line[1]
+            if chr_ in chr_map_to_raw_bed:
+                chr_raw = chr_map_to_raw_bed[chr_]
+            else:
+                chr_raw = chr_
+                chr_not_converted.add(chr_)
             enhancer_id = line[0]
-            print(k_enhancer, file=o)
+            print(f'{chr_raw}\t{k_enhancer}', file=o)
             k_enhancer_map[k_enhancer] = enhancer_id
+    
+    if len(chr_not_converted) > 0:
+        logger.debug(f'{len(chr_not_converted)} lines , the chrom not converted back to raw:  {sorted(chr_not_converted)}, chr_map = {chr_map_to_raw_bed}')
     status = sort_bed_like_file(fn_enhancer_short)
     if status:
         return 1
@@ -457,7 +489,7 @@ def main():
     # dump the count
     fn_count_enhancer = f'{pwout}/intermediate/count_enhancer.txt'
     with open(fn_count_enhancer, 'w') as o:
-        print(f'Enhancer_ID\tchr\tstart\tend' + '\t'.join([_[0] for _ in fls_in]), file=o)
+        print(f'Enhancer_ID\tchr\tstart\tend\t' + '\t'.join([_[0] for _ in fls_in]), file=o)
         for k_enhancer, v in enhancer_count.items():
             enhancer_id = k_enhancer_map[k_enhancer]
             print(f'{enhancer_id}\t{k_enhancer}\t' + '\t'.join(v), file=o)

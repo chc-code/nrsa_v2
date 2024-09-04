@@ -2350,6 +2350,8 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 # thre are matched minus strand to make a region
                 enhancer_region[chr_][e_plus] = iregion
     
+    tmp = sum([len(v) for v in enhancer_region.values()])
+    logger.debug(f'enhancer_region, n = {tmp}')
     # combine adjacent regions
     enh_out = []
     for chr_, v1 in enhancer_region.items():
@@ -2492,6 +2494,9 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
             metadata = pd.DataFrame({
                 'condition': ['control'] * n_ctrl + ['case'] * n_case,
             })
+            logger.debug(data.columns)
+            logger.debug(data.head())
+            
             ref_level = 'control'
             size_factors_in = np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
             res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 

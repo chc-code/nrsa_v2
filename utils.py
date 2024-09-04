@@ -1263,6 +1263,13 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # here must convert gene_col to list, otherwise, the value will be all NaN, because the index does not match
     colname_transcript = data.columns[idx_transcript]
     res_df.reset_index(colname_transcript, inplace=True)
+    
+    # logger.debug('head of data')
+    # logger.debug(data.head().to_dict())
+    
+    # logger.debug('header of res_df')
+    # logger.debug(res_df.head().to_dict())
+    
     res_df = data.iloc[:, :n_gene_cols].merge(res_df, on=colname_transcript, how='right')
     # res_df.insert(1, 'Gene', list(gene_col))
     res_df = res_df.sort_values('padj')
@@ -2474,6 +2481,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
         logger.debug(f'nf passed in, but flag set to be {flag}, will ignore, and set flag as 1')
     
     data = pd.read_csv(fn_count_enhancer, sep='\t')
+    data['Enhancer_ID'] = data['Enhancer_ID'].astype(str)
     fn_norm = f'{pwout}/eRNA/normalized_count_enhancer.txt'
     if condition == 1:
         # no case samples
@@ -2497,8 +2505,6 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
             metadata = pd.DataFrame({
                 'condition': ['control'] * n_ctrl + ['case'] * n_case,
             })
-            logger.debug(data.columns)
-            logger.debug(data.head())
             
             ref_level = 'control'
             size_factors_in = np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])

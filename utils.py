@@ -15,7 +15,6 @@ import numpy as np
 import fisher
 import traceback
 import bisect 
-# import bisect
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
 pw_code = os.path.dirname(os.path.realpath(__file__))
@@ -1255,8 +1254,10 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # the logFC is the same as R, but the p-value and padj are slightly different
     res_df = stat_res.results_df
     # here must convert gene_col to list, otherwise, the value will be all NaN, because the index does not match
-    res_df.reset_index('Transcript', inplace=True)
-    res_df.insert(1, 'Gene', list(gene_col))
+    colname_transcript = data.columns[idx_transcript]
+    res_df.reset_index(colname_transcript, inplace=True)
+    res_df = data.iloc[:, :n_gene_cols].merge(res_df, on=colname_transcript, how='right')
+    # res_df.insert(1, 'Gene', list(gene_col))
     res_df = res_df.sort_values('padj')
     
     return res_df, size_factors
@@ -1920,7 +1921,8 @@ def run_shell(cmd, echo=False):
     return retcode
 
 def get_lb(fn):
-    return fn.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+    lb = fn.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+    return re.sub(r'\.sort(ed)?\b', '', lb)
 
 
 
@@ -2031,8 +2033,9 @@ def process_input(pwout_raw, fls):
                 
             if is_sorted:
                 fn_abs = os.path.realpath(fn)
-                os.system(f'ln -sf {fn_abs} {fn_out_bed_gz}')
-                ires = [fn_lb, fn_out_bed_gz]
+                fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
+                os.system(f'ln -sf {fn_abs} {fn_dest}')
+                ires = [fn_lb, fn_dest]
             else:
                 logger.warning(f'input bed is not sorted, now sorting...')
                 # bedtools can handle gzip format
@@ -2245,17 +2248,19 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
             f.readline()
             for i in f:
                 chr_, s, e, info = i[:-1].split('\t', 4)[:4]
-                chr_ = refine_chr(chr_)
                 info = info.split(';')
                 if len(info) < 5:
                     continue
                 e_chr, e_start, e_end = re.split(r'[-:]', info[0])
                 e_start, e_end = int(e_start), int(e_end)
                 assoc_gn = info[2]
+                e_chr = refine_chr(e_chr)
                 if e_chr not in enh_sites:
                     enh_sites[e_chr] = {}
                 for i in range(e_start, e_end + 1):
                     enh_sites[e_chr].setdefault(i, set()).add(assoc_gn)
+    
+    logger.debug(f'enh_sites keys = {sorted(enh_sites)}')
     
     # the gene list value to string 
     tmp = {}
@@ -2282,7 +2287,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
             iregion = {'start': e_plus, 'end': e_plus, 'center_list': [], 'fantom_list': [], 'asso_list': []}
             
             # get the loop start for minus_region
-            idx_minus_region = bisect.bisect(minus_region, s_plus - lcut) # from this index and after, all with d < lcut
+            idx_minus_region = bisect.bisect_left(minus_region_e, s_plus - lcut) # from this index and after, all with d < lcut
             for s_minus, e_minus in minus_region[idx_minus_region:]:
                 if s_minus >= e_plus:
                     break
@@ -2306,18 +2311,18 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                     continue
                 if s_minus < iregion['start']:
                     iregion['start'] = s_minus
-                iregion['center_list'].append(center_pos)
+                iregion['center_list'].append(str(center_pos))
                 iregion['fantom_list'].append('Y' if center_pos in fantom_sites[chr_] else 'N')
                 iregion['asso_list'].append(enh_sites[chr_][center_pos] if center_pos in enh_sites[chr_] else 'NA')
                 
                 len_minus_region = e_minus - s_minus
                 if len_minus_region > thres_long_eRNA:
-                    lerna_out.add([chr_, s_minus, e_minus, '-'])
+                    lerna_out.add('\t'.join(map(str, [chr_, s_minus, e_minus, '-'])))
                 
             # plus region is longeRNA
             n_centers = len(iregion['center_list'])
             if is_long_eRNA_plus and n_centers > 0:
-                lerna_out.add([chr_, s_plus, e_plus, '+'])
+                lerna_out.add('\t'.join(map(str, [chr_, s_plus, e_plus, '+'])))
             
             if n_centers > 0:
                 # thre are matched minus strand to make a region
@@ -2338,17 +2343,32 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
             else:
                 enh_out.append(iregion)
             prev_region =iregion
-    enh_out_str = ['\t'.join([i['chr'], i['start'], i['end'], ','.join(i['center_list']), ','.join(i['fantom_list']), ';'.join(i['asso_list'])]) for i in enh_out]
-    
-    lerna_out = sorted(lerna_out, key=lambda x: (x[0, x[1], x[2]]))
+    enh_out_str = ['\t'.join([i['chr'], str(i['start']), str(i['end']), ','.join(i['center_list']), ','.join(i['fantom_list']), ';'.join(i['asso_list'])]) for i in enh_out]
+    lerna_out = sorted([_.split('\t') for _ in lerna_out], key=lambda x: (x[0], int(x[1]), int(x[2])))
     
     if filter:
-        if not exists(fn_tss_tts):
+        if not os.path.exists(fn_tss_tts):
             logger.warning(f'no tss_tts file found, skip filtering')
         else:
             tss_tts_info = process_tss_tts(fn_tss_tts)
-            enh_out_str = [line for line in enh_out_str if filter_by_tss_tts(line, tss_tts_info)]
+            enh_out_str = [line_str for line_str in enh_out_str if filter_by_tss_tts(line_str.split('\t', 3), tss_tts_info)]
             lerna_out = [line for line in lerna_out if filter_by_tss_tts(line, tss_tts_info)]
+            
+            # enh_new = []
+            # lerna_new = []
+            # for line in enh_out_str:
+            #     try:
+            #         keep = filter_by_tss_tts(line, tss_tts_info)
+            #     except:
+            #         logger.error(f'invalid input for filter: enh_out, line = \n{line}')
+            #         sys.exit(1)
+            # for line in lerna_out:
+            #     try:
+            #         keep = filter_by_tss_tts(line, tss_tts_info)
+            #     except:
+            #         logger.error(f'invalid input for filter: lerna, line = \n{line}')
+            #         sys.exit(1)
+
     
     # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
     return enh_out_str, lerna_out, 
@@ -2368,8 +2388,8 @@ def process_tss_tts(fn):
             chr_ = refine_chr(temp[0])
             tss_tts_info.setdefault(chr_, {})[temp[3]] = {
                 'chr': temp[0],
-                'tss': temp[1],
-                'tts': temp[2],
+                'tss': int(temp[1]),
+                'tts': int(temp[2]),
                 'strand': temp[4]
             }
 
@@ -2391,6 +2411,7 @@ def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
     # chr1	3361552	3377812	XR_865166.2	+
     # chr1	3672278	3199733	XM_006495550.3	-
     chr_, start, end = line[:3]
+    start, end = int(start), int(end)
     if chr_ not in tss_tts_info:
         return 1
     keep = 1
@@ -2412,3 +2433,50 @@ def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
                 keep = 0
                 break
     return keep
+
+def sort_bed_like_file(fn):
+    status = os.system(f'sort -k 1,1 -k 2,2n {fn} > {fn}.sorttmp;mv {fn}.sorttmp {fn}')
+    if status:
+        logger.error(f'fail to sort file {fn}')
+    return status
+
+def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctrl, sam_case, flag=1):
+    # flag = 1, means that the normalization factors are passed in, no need to calculate there
+    condition = 2 if n_case > 0 else 1
+    if flag != 1:
+        logger.debug(f'nf passed in, but flag set to be {flag}, will ignore, and set flag as 1')
+    
+    data = pd.read_csv(fn_count_enhancer, sep='\t')
+    fn_norm = f'{pwout}/eRNA/normalized_count_enhancer.txt'
+    if condition == 1:
+        # no case samples
+        if n_ctrl == 1:
+            os.system(f'cp {fn_count_enhancer} {fn_norm}')
+        else:
+            pass # save norm data at the end
+    else:
+        # with case, will also calculate the Enhancer_change
+        fn_change = f'{pwout}/eRNA/Enhancer_change.txt'
+        data_change = data.iloc[:, :4].copy()
+        if n_case + n_ctrl == 2:
+            # each condition only have a single sample
+            sam_ctrl, sam_case = sam_ctrl[0], sam_case[0]
+            fc = (data[sam_case] * factor_d[sam_case]) / (data[sam_ctrl] * factor_d[sam_ctrl])
+            data_change['log2fc'] = np.log2(fc)
+            data_change.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
+        else:
+            # run deseq2
+            n_gene_cols = 4
+            metadata = pd.DataFrame({
+                'condition': ['control'] * n_ctrl + ['case'] * n_case,
+            })
+            ref_level = 'control'
+            size_factors_in = np.array([factor_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
+            res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
+               size_factors_in=size_factors_in)
+            res_df.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
+
+    for sam_lb, nf in factors_d.items():
+        data[sam_lb] = data[sam_lb] * nf
+    data.to_csv(fn_norm, sep='\t', index=False, na_rep='NA')
+

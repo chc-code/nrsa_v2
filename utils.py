@@ -1179,6 +1179,17 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     idx_gene_cols = list(range(n_gene_cols))
     if n_gene_cols < 2:
         logger.error(f'DESeq analysis is for known genes only, the first 2 columns should be Transcript and Gene')
+
+    
+    # if each group only have one sample
+    n_sam = counttable.shape[0]
+    if n_sam == 2:
+        log2fc = np.log2(data.iloc[:, n_gene_cols + 1]) / (data.iloc[:, n_gene_cols])
+        res_df = data.iloc[:, idx_gene_cols]
+        res_df['log2FoldChange'] = log2fc
+        return res_df, np.array([1, 1])
+
+
     gene_col = data.iloc[:, idx_gene] # use Transcript as index
     counttable.index = data.iloc[:, idx_transcript]
     
@@ -1214,14 +1225,7 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
 
     if size_factor_only:
         return None, size_factors
-    
-    # if each group only have one sample
-    n_sam = counttable.shape[0]
-    if n_sam == 2:
-        log2fc = np.log2(data.iloc[:, n_gene_cols + 1] / size_factors[1]) / (data.iloc[:, n_gene_cols] / size_factors[0])
-        res_df = data.iloc[:, idx_gene_cols]
-        res_df['log2FoldChange'] = log2fc
-        return res_df, size_factors
+
 
     if size_factors_in is None:  # gb change
         dds.deseq2()
@@ -1326,7 +1330,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
 
     return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
 
-def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None):
+def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None, islongerna=False):
     # data = processed, count_pp_gb.txt, already removed the chr, start, end  and strand column, and already collapsed the transcripts with the same gene
     # if factor1, factor2 is not None, it should be a list
     # n_gene_cols = 2 for known gene, and 1 for eRNA
@@ -1334,11 +1338,18 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     # columns = "Transcript\tGene"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
     if rep2 == 0:
         factor2 = []
-    
+        
+    if islongerna:
+        pw_change_prefix = f'{out_dir}/eRNA/longeRNA-'
+    else:
+        pw_change_prefix = f'{out_dir}/known_gene/'
+
     n_sam = rep1 + rep2
-    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2)
+    skip_filtering = islongerna # skip if islongeRNA
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
     
-    data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
+    if not islongeRNA:
+        data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
     
     data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R
     data_drop_pp = data_drop.iloc[:, idx_gene_cols + idx_ppc_combined] # data_pp in R
@@ -1368,12 +1379,14 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     
     if rep2 > 0:
         # gb change
+        
+        
         logger.info('running DESeq2')
         with HiddenPrints():
             res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
             res_df_full = pd.concat([res_df, data_drop_gb.iloc[:, idx_gene_cols]])
             
-            res_df_full.to_csv(f'{out_dir}/known_gene/gb_change.txt', sep='\t', index=False, na_rep='NA')
+            res_df_full.to_csv(f'{pw_change_prefix}gb_change.txt', sep='\t', index=False, na_rep='NA')
             
             # pp change
             try:
@@ -1388,7 +1401,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
                 sys.exit(1)
                 
             res_df_full = pd.concat([res_df, data_drop_pp.iloc[:, idx_gene_cols]])
-            res_df_full.to_csv(f'{out_dir}/known_gene/pp_change.txt', sep='\t', index=False, na_rep='NA')
+            res_df_full.to_csv(f'{pw_change_prefix}pp_change.txt', sep='\t', index=False, na_rep='NA')
     elif rep1 == 1:
         logger.debug('single contrl sample only')
         size_factors = 1 # size factor is 1 for the only sample
@@ -1399,8 +1412,9 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     norm_factors = 1 / size_factors
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
-    nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
-    nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
+    if not islongeRNA:
+        nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
+        nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
     return size_factors, sam_list
     
 
@@ -1462,7 +1476,7 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     print('dumping result')
     data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t', na_rep='NA')
 
-def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
+def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0, islongerna=False):
     """
     adapted from Rscript change_pp_gb.R
     if factor_flag == 1, then will use these normalization factors, otherwise , will use DESeq2 to normalize the data
@@ -1482,7 +1496,12 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
         err = 1
     if err:
         return 1
-    fn_norm = f'{out_dir}/known_gene/normalized_pp_gb.txt'
+    if islongerna:
+        pw_change_prefix = f'{out_dir}/eRNA/longeRNA-'
+    else:
+        pw_change_prefix = f'{out_dir}/known_gene/'
+
+    fn_norm = f'{pw_change_prefix}normalized_pp_gb.txt'
 
     
     data_raw = pd.read_csv(fn, sep='\t')
@@ -1493,29 +1512,31 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     cols_gbc = [i for i in cols if i.startswith('gbc_')]
     cols_gbd = [i for i in cols if i.startswith('gbd_')]
     
-    data['ppc_sum'] = data[cols_ppc].sum(axis=1)
-    data['gbc_sum'] = data[cols_gbc].sum(axis=1)
-    
-    ## !!! collapse the data from transcript level to gene level
-    def is_max(col):
-        max_v = col.max()
-        return [1 if i == max_v else 0 for i in col]
+    # only collapse the genes for refgenes, not longeRNA
+    if not islongerna:
+        data['ppc_sum'] = data[cols_ppc].sum(axis=1)
+        data['gbc_sum'] = data[cols_gbc].sum(axis=1)
+        
+        ## !!! collapse the data from transcript level to gene level
+        def is_max(col):
+            max_v = col.max()
+            return [1 if i == max_v else 0 for i in col]
 
-    # colapase by ppc_sum
-    data['SameGene_ppc_sum_max'] = data.groupby('Gene')['ppc_sum'].transform(is_max)
-    data = data.loc[data['SameGene_ppc_sum_max'] == 1]
-    
-    # if multiple transcripts have the same max ppc_sum, then choose the one with the max gbc_sum
-    data['SameGene_gbc_sum_max'] = data.groupby('Gene')['gbc_sum'].transform(is_max)
-    data = data.loc[data['SameGene_gbc_sum_max'] == 1]
-    
-    # leaving the first one for each gene
-    data = data.drop_duplicates(subset='Gene', keep='first').drop(columns=['SameGene_ppc_sum_max', 'SameGene_gbc_sum_max', 'ppc_sum', 'gbc_sum'])
+        # colapase by ppc_sum
+        data['SameGene_ppc_sum_max'] = data.groupby('Gene')['ppc_sum'].transform(is_max)
+        data = data.loc[data['SameGene_ppc_sum_max'] == 1]
+        
+        # if multiple transcripts have the same max ppc_sum, then choose the one with the max gbc_sum
+        data['SameGene_gbc_sum_max'] = data.groupby('Gene')['gbc_sum'].transform(is_max)
+        data = data.loc[data['SameGene_gbc_sum_max'] == 1]
+        
+        # leaving the first one for each gene
+        data = data.drop_duplicates(subset='Gene', keep='first').drop(columns=['SameGene_ppc_sum_max', 'SameGene_gbc_sum_max', 'ppc_sum', 'gbc_sum'])
     
     n_sam = rep1 + rep2
     
     # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2)
+    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2, , islongerna=islongerna)
 
     # get the normalized data
     n_extra_cols = 4 # chr, start, end, strand

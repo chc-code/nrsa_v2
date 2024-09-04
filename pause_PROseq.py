@@ -641,7 +641,7 @@ def main(args):
     logger.info('Change_pp_gb')
     # logger.warning('modify here')
     
-    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)
+    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
     
     # dump pindex.txt
     # pause_index[fn_lb][transcript_id] = [pro_vs_pb, pvalue, fdr]

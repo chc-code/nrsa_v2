@@ -46,7 +46,7 @@ args = getargs()
 # print('after get args')
 # print(args)
 
-from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf
+from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, get_ref_erna
 
 sys.dont_write_bytecode = True
 
@@ -173,7 +173,10 @@ class Analysis:
             if not fa_in.endswith('.fa'):
                 logger.error(f"Invalid fasta file provided, file extension should be .fa in plain text. input = {fa_in}")
                 self.status = 1
-        ref_fls = get_ref(self.organism, fa_in=fa_in, gtf=args.gtf)
+        if is_long_eRNA:
+            ref_fls = get_ref_erna(self.organism, fn_gtf=args.gtf)
+        else:
+            ref_fls = get_ref(self.organism, fa_in=fa_in, gtf=args.gtf)
         if ref_fls is None:
             logger.error("Error encountered while retrieving reference files")
             self.status = 1

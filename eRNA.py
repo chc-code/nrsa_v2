@@ -462,6 +462,10 @@ def main():
     sam_case = [_[0] for _ in in2]
     change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctrl, sam_case, flag=1)
     
+    # pause longeRNA
+    
+    
+    
     # temp_str = ""
     # temp_id = {}
     # line = 0

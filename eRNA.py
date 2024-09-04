@@ -239,6 +239,7 @@ def main():
     
     other_genes = gtf_compare(gtf_info, fn_peak_gtf) # the transcript without overlap with refseq gtf
     other_region = get_other_region(other_genes, fn_peak_txt)
+    logger.debug(f'other regions, n = {len(other_region)}')
 
     # load active genes
     # 2 columns, col2 = ts, col2 = gn

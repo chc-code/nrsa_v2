@@ -1345,7 +1345,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         pw_change_prefix = f'{out_dir}/known_gene/'
 
     n_sam = rep1 + rep2
-    skip_filtering = islongerna # skip if islongeRNA
+    skip_filtering = islongerna # skip if islongerna
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
     
     if not islongerna:
@@ -1412,7 +1412,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     norm_factors = 1 / size_factors
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
-    if not islongeRNA:
+    if not islongerna:
         nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
         nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
     return size_factors, sam_list
@@ -2483,7 +2483,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
         if n_case + n_ctrl == 2:
             # each condition only have a single sample
             sam_ctrl, sam_case = sam_ctrl[0], sam_case[0]
-            fc = (data[sam_case] * factor_d[sam_case]) / (data[sam_ctrl] * factor_d[sam_ctrl])
+            fc = (data[sam_case] * factors_d[sam_case]) / (data[sam_ctrl] * factors_d[sam_ctrl])
             data_change['log2fc'] = np.log2(fc)
             data_change.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
         else:
@@ -2493,7 +2493,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
                 'condition': ['control'] * n_ctrl + ['case'] * n_case,
             })
             ref_level = 'control'
-            size_factors_in = np.array([factor_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
+            size_factors_in = np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
             res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
                size_factors_in=size_factors_in)
             res_df.to_csv(fn_change, sep='\t', index=False, na_rep='NA')

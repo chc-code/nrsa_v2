@@ -527,11 +527,11 @@ def main():
     
     # pause longeRNA
     
-    if lerna_out:
-        logger.info(f'Detecting long eRNA change...')
-        # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
-        from pause_longeRNA import main
-        fn_gtf = 
+    # if lerna_out:
+    #     logger.info(f'Detecting long eRNA change...')
+    #     # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
+    #     from pause_longeRNA import main
+    #     fn_gtf = 
     
     
     # signal.pl

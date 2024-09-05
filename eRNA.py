@@ -19,6 +19,35 @@ def green(s):
     return f'\u001b[32m{s}\u001b[0m'
 
 
+
+def getarg():
+    import argparse as arg
+    from argparse import RawTextHelpFormatter
+    ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
+    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+', required=True)
+    ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
+    ps.add_argument('-pwout', help="""work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
+    ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], required=True)
+    ps.add_argument('-gtf', help='Customized GTF file path, if not specified, will use the default one for the organism')
+
+    # ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
+    ps.add_argument('-cutoff', '-c', help="""distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)""", type=int, default=400)
+    ps.add_argument('-distance', '-d', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
+    ps.add_argument('-le', '-long_ena', help="""length cutoff for long-eRNA identification (bp, default: 10000)""", type=int, default=10000)
+    ps.add_argument('-filter', '-f', help="""whether to filter for enhancers: 0 (not filter) or 1 (filter), deflault: 1""", choices=[0, 1], default=1)
+    ps.add_argument('-dtss', help="""if filter enhancers, the minimum distance from enhancer to TSS (Transcription Start Site) (bp, default: 2000)""", type=int, default=2000)
+    ps.add_argument('-dtts', help="""if filter enhancers, the minimum distance from enhancer to TTS(Transcription Termination Site) (bp, default: 20000)""", type=int, default=20000)
+    ps.add_argument('-wd', help="""distance within which associate active genes of enhancer (bp, default: 50000)""", type=int, default=50000)
+    ps.add_argument('-pri', help="""if set, will prioritize enhancer. default is false""", action='store_true')
+    ps.add_argument('-peak', help="""required if -pri set. ChIP-seq peak file for the regulator of interest in bed format""")
+    ps.add_argument('-lk', help=""" valid when -pri is set for two conditions. Transcriptional changes to be used for enhancer prioritization, the value can be pp (changes in promoter-proximal region), gb (changes in gene body region), or pindex (changes in pausing index) (default: gb)""", choices=["pp", "gb", "pindex"] , default='gb')
+    ps.add_argument('-dirction', help="""valid when -pri set  for two conditions. The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)""", type=int, choices=[-1, 0, 1], default=0)
+    ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
+    ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
+    ps.add_argument('-demo', help="""skip HOMER makeTagDirectory if already done""", action='store_true')
+    args = ps.parse_args()
+    return args
+
 def getlogger(fn_log=None, logger_name=None, nocolor=False):
     import logging
     logger_name = logger_name or "main"
@@ -95,36 +124,9 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
         logger.addHandler(fh_file)
     return logger
 
-logger = getlogger('eRNA.run.log', 'NRSA')
-
-def getarg():
-    import argparse as arg
-    from argparse import RawTextHelpFormatter
-    ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+', required=True)
-    ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
-    ps.add_argument('-pwout', help="""work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
-    ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], required=True)
-    ps.add_argument('-gtf', help='Customized GTF file path, if not specified, will use the default one for the organism')
-
-    # ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
-    ps.add_argument('-cutoff', '-c', help="""distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)""", type=int, default=400)
-    ps.add_argument('-distance', '-d', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
-    ps.add_argument('-le', '-long_ena', help="""length cutoff for long-eRNA identification (bp, default: 10000)""", type=int, default=10000)
-    ps.add_argument('-filter', '-f', help="""whether to filter for enhancers: 0 (not filter) or 1 (filter), deflault: 1""", choices=[0, 1], default=1)
-    ps.add_argument('-dtss', help="""if filter enhancers, the minimum distance from enhancer to TSS (Transcription Start Site) (bp, default: 2000)""", type=int, default=2000)
-    ps.add_argument('-dtts', help="""if filter enhancers, the minimum distance from enhancer to TTS(Transcription Termination Site) (bp, default: 20000)""", type=int, default=20000)
-    ps.add_argument('-wd', help="""distance within which associate active genes of enhancer (bp, default: 50000)""", type=int, default=50000)
-    ps.add_argument('-pri', help="""if set, will prioritize enhancer. default is false""", action='store_true')
-    ps.add_argument('-peak', help="""required if -pri set. ChIP-seq peak file for the regulator of interest in bed format""")
-    ps.add_argument('-lk', help=""" valid when -pri is set for two conditions. Transcriptional changes to be used for enhancer prioritization, the value can be pp (changes in promoter-proximal region), gb (changes in gene body region), or pindex (changes in pausing index) (default: gb)""", choices=["pp", "gb", "pindex"] , default='gb')
-    ps.add_argument('-dirction', help="""valid when -pri set  for two conditions. The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)""", type=int, choices=[-1, 0, 1], default=0)
-    ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
-    ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
-    ps.add_argument('-demo', help="""skip HOMER makeTagDirectory if already done""", action='store_true')
-    args = ps.parse_args()
-    return args
-
+args = getarg()
+pwouttmp = args.pwout
+logger = getlogger(f'{pwouttmp}/eRNA.run.log', 'NRSA')
 
 def main():
     from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer

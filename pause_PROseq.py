@@ -130,7 +130,9 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         fh_file.name = 'file'
         logger.addHandler(fh_file)
     return logger
-logger = getlogger('NRSA.run.log', 'NRSA')
+
+pwouttmp = args.pwout
+logger = getlogger(f'{pwouttmp}/NRSA.run.log', 'NRSA')
 
 
 class Analysis:

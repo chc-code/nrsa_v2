@@ -2508,7 +2508,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
         if n_case + n_ctrl == 2:
             # each condition only have a single sample
             sam_ctrl, sam_case = sam_ctrl[0], sam_case[0]
-            fc = (data[sam_case] * factors_d[sam_case]) / (data[sam_ctrl] * factors_d[sam_ctrl])
+            fc = (data[sam_case] * factors_d[sam_case]) / (data[sam_ctrl].replace(0, np.nan) * factors_d[sam_ctrl])
             data_change['log2fc'] = np.log2(fc)
             data_change.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
         else:

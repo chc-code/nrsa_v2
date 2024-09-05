@@ -2520,9 +2520,10 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
             
             ref_level = 'control'
             size_factors_in = np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
-            res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
-               size_factors_in=size_factors_in)
-            res_df.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
+            with HiddenPrints():
+                res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
+                size_factors_in=size_factors_in)
+                res_df.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
 
     for sam_lb, nf in factors_d.items():
         data[sam_lb] = data[sam_lb] * nf

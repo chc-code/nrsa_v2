@@ -134,6 +134,8 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
 pwouttmp = args.pwout
 logger = getlogger(f'{pwouttmp}/NRSA.run.log', 'NRSA')
 
+logger.debug(f'working in {os.getcwd()}')
+logger.debug(f'inpu args = {vars(args)}')
 
 class Analysis:
     def __init__(self, args, is_long_eRNA=False):

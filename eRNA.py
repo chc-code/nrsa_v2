@@ -128,6 +128,9 @@ args = getarg()
 pwouttmp = args.pwout
 logger = getlogger(f'{pwouttmp}/eRNA.run.log', 'NRSA')
 
+logger.debug(f'working in {os.getcwd()}')
+logger.debug(f'inpu args = {vars(args)}')
+
 def main():
     from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer
     from types import SimpleNamespace

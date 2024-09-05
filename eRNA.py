@@ -466,9 +466,9 @@ def main():
     status = sort_bed_like_file(fn_enhancer_short)
     if status:
         return 1
-    logger.info(fn_enhancer_short)
+    # logger.info(fn_enhancer_short)
     
-    logger.info(f'uncomment above')
+    # logger.info(f'uncomment above')
     
     logger.info('Detecting Enhancer change...')
     n_ctrl, n_case = len(in1), len(in2)
@@ -486,7 +486,7 @@ def main():
     enhancer_count = {}  # key = enhancer info, chr, start, end, v = list of number,  length is same as sample number
     n_sam = n_ctrl + n_case
     sam_idx = -1
-    logger.debug(f'Getting enhancer read count...')
+    logger.info(f'Getting enhancer read count...')
     for fn_lb, fn_bed in fls_in:
         sam_idx += 1
         fn_coverage_res = f'{pwout}/intermediate/enhancer_cov.{fn_lb}.bed'
@@ -520,12 +520,28 @@ def main():
             print(f'{enhancer_id}\t{k_enhancer}\t' + '\t'.join(v), file=o)
         
     # change_enhancer
-    logger.debug(f'change_enhancer')
+    logger.info(f'change_enhancer')
     sam_ctrl = [_[0] for _ in in1]
     sam_case = [_[0] for _ in in2]
     change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctrl, sam_case, flag=1)
     
     # pause longeRNA
+    
+    if lerna_out:
+        logger.info(f'Detecting long eRNA change...')
+        # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
+        from pause_longeRNA import main
+        fn_gtf = 
+    
+    
+    # signal.pl
+    
+        # my $cmd_file3 = $bin_dir . "\/signal.pl";
+        # my $tname     = "signal_around_ehancer-center";
+        # print "Generating figures......\n";
+        # my $cmd_plot =
+        # "perl $cmd_file3 -w $out_dir -i $out2 -in1 $cond1_str -in2 $cond2_str -n $tname";
+        # system($cmd_plot);
     
     
     # # Define other required variables

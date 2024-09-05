@@ -226,8 +226,12 @@ class Analysis:
             self.n_gene_cols = 2
             self.gene_cols = ['Transcript', 'Gene']
             self.longerna_flag_str = ''
-        
+
         self.skip_get_mapped_reads = 0
+        
+        # logger.warning('modify here')
+        # self.skip_get_mapped_reads = 1
+        
         self.skip_count_pp_gb = 0
 
         fn_lb_uniq = set()
@@ -248,9 +252,11 @@ class Analysis:
             #     file_exist_flag = 1
             #     fh_bed_peaks = open(fn_bed_peaks, 'r')
             # else:
-            
-            fh_bed_peaks = open(fn_bed_peaks, 'w')
-            fh_bed_peaks.write('\t'.join(header_bed_peaks) + '\n')
+            if self.skip_get_mapped_reads:
+                fh_bed_peaks = open(fn_bed_peaks, 'r')
+            else:
+                fh_bed_peaks = open(fn_bed_peaks, 'w')
+                fh_bed_peaks.write('\t'.join(header_bed_peaks) + '\n')
             self.out_fls['bed_peaks'][fn_lb] = {'fn': fn_bed_peaks, 'fh': fh_bed_peaks, 'header': header_bed_peaks, 'exist': file_exist_flag}
             
             header_fdr = header_bed_peaks + ['pvalue', 'FDR']
@@ -329,27 +335,25 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
         # exclude the ts that the chr not in the bed files
         valid_chr = set(count_per_base)
         chr_excluded = {}
-        ts_excluded = 0
-        ts_list_copy = ts_list.copy()
+        ts_excluded = set()
         
         for ts, v in gtf_info.items():
             ts_chr = v['chr']
             if ts_chr not in valid_chr:
-                ts_excluded += 1
-                ts_list_copy.remove(ts)
+                ts_excluded.add(ts)
                 if ts in pp_str:
-                    del pp_str[ts]
+                    pp_str[ts].append('NA')
                 if ts in gb_str:
-                    del gb_str[ts]
+                    gb_str[ts].append('NA')
                 chr_excluded.setdefault(ts_chr, 0)
                 chr_excluded[ts_chr] += 1
-        if ts_excluded > 0:
-            n_ts_now = len(ts_list_copy)
-            logger.info(f'{ts_excluded} transcripts in GTF file excluded due to chromosome not exist in bed file')
-            logger.debug(f'init ts list = {n_ts_init}, current = {n_ts_now}, drop = {n_ts_init - n_ts_now}, exp drop = {ts_excluded}')
+        if len(ts_excluded) > 0:
+            logger.info(f'{len(ts_excluded)} transcripts in GTF file excluded due to chromosome not exist in bed file')
             logger.debug(f'excluded chr = {chr_excluded}')
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
-        for transcript_id in ts_list_copy:
+        for transcript_id in ts_list:
+            if transcript_id in ts_excluded:
+                continue
             gene_info = gtf_info[transcript_id]
             chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
 
@@ -359,7 +363,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
                 prev_time, prev_count = prev
                 time_gap = now - prev_time
                 speed = time_gap * 1000  / (n - prev_count)
-                logger.info(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
+                logger.debug(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
                 prev = [now, n]
 
             # pp_res: {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
@@ -491,6 +495,8 @@ def main(args):
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
     gtf_info, fn_tss, fn_tss_tts, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
 
+    # logger.warning(f'ts lenth = {len(gtf_info)}')
+    # sys.exit(1)
     # if args.testfunc:
     #     logger.warning('Debugging mode')
     #     transcript_id1 = 'NM_000051.3'
@@ -533,33 +539,51 @@ def main(args):
 
     tmp = sorted(gtf_info)
     # for k, v in gtf_info.items():
+    merged_transcripts = 0
+    skipped_ts = {'invalid_chr': 0,  'short': 0}
+    # ts_prefix = {}
     for k in tmp:
         v = gtf_info[k]
         if v['chr'] not in fa_idx:
+            skipped_ts['invalid_chr'] += 1
             continue
-        if k[0] != 'N' and k[:3] != 'ENS':
-            # unkown_transcript += 1
-            # unkown_transcript_list.append(k)
-            continue
+        # if k[0] != 'N' and k[:3] != 'ENS':
+        #     # unkown_transcript += 1
+        #     # unkown_transcript_list.append(k)
+        #     ts_prefix.setdefault(k[:3], 0)
+        #     ts_prefix[k[:3]] += 1
+        #     skipped_ts['invalid_ts_prefix'] += 1
+        #     continue
         if v['end'] - v['start'] + 1 > min_gene_len: # not include if len is 1000 (min_gene_len)
+            merged_transcripts += k.count(';')
             gtf_info_new[k] = add_value_to_gtf(v, pro_up, pro_down, gb_down_distance) 
             if benchmode:
                 ct += 1
                 if ct == bench_max_gene:
                     break
         else:
+            skipped_ts['short'] += 1
             short_genes += 1
-            
-    if short_genes:
-        logger.warning(f"Number of genes with length less than the minimum gene length ({min_gene_len}): n= {short_genes}, current total genes: {len(gtf_info_new)}")
-    else:
-        logger.info(f"Total number of genes after filtering: {len(gtf_info_new)}")
+    total_skipped = sum(skipped_ts.values())
+    len1 = len(gtf_info_new)
+    logger.debug(f'initial gtf dict = {len(gtf_info)}, total skipped = {total_skipped}, detail = {skipped_ts} merged transcript = {merged_transcripts}, total count before merge = {len1 + merged_transcripts}, current ts count = {len1}')
+    # logger.warning('modify here')
+    # logger.debug(ts_prefix)
+    # sys.exit(1)
+    # if short_genes:
+    #     logger.warning(f"Number of genes with length less than the minimum gene length ({min_gene_len}): n= {short_genes}, current total genes: {len(gtf_info_new)}")
+    # else:
+    #     logger.info(f"Total number of genes after filtering: {len(gtf_info_new)}")
+    
+    
     gtf_info = gtf_info_new
     fls = analysis.input_fls # element is [fn_lb, fn_bed]
     sam_order = [_[0] for _ in fls]
     n_gene_cols = analysis.n_gene_cols
     
-    reuse_pre_count = not vars(args).get('ignore', False) # modify here
+    reuse_pre_count = not vars(args).get('ignore', False)
+
+    
     if not analysis.skip_get_mapped_reads:
         logger.info(f'Getting pp_gb count')
         pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
@@ -599,11 +623,14 @@ def main(args):
             v3 = v1.get(isam, ['NA', 'NA', 'NA'])
             v2 += v3
         pause_index_str_new[transcript_id] = v2
+    del pause_index_str
+    gc.collect()
     pause_index_str = pause_index_str_new
     
  
     # count_pp_gb
     fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    
     # analysis.skip_count_pp_gb = 0
     if not analysis.skip_count_pp_gb:
         if analysis.skip_get_mapped_reads:
@@ -624,12 +651,24 @@ def main(args):
             print('\t'.join(header), file=o)
             for transcript_id in pp_str:
                 gene_info = gtf_info[transcript_id]
+                # row = []
                 row = [transcript_id]
                 if not analysis.longerna:
                     row.append(gene_info['gene_name'])
                 row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
                 row += pp_str[transcript_id] + gb_str[transcript_id]
                 print('\t'.join(row), file=o)
+                
+                # if ';' not in transcript_id:
+                #     row.insert(0, transcript_id)
+                #     print('\t'.join(row), file=o)
+                # else:
+                #     for its in transcript_id.split(';'):
+                #         print(f'{its}\t' + '\t'.join(row), file=o)
+
+    del pp_str
+    del gb_str
+    gc.collect()
 
     # if time_cost:
     #     tmp = json.dumps(time_cost, indent=3)
@@ -639,8 +678,7 @@ def main(args):
 
     # modify here
     logger.info('Change_pp_gb')
-    # logger.warning('modify here')
-    
+        
     change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
     
     # dump pindex.txt

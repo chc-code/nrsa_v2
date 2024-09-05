@@ -1579,8 +1579,10 @@ def cmhtest(row, rep1, rep2):
             gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
             # below is the gb2 defined in R code, which is wrong, here just used to test the consistency
             # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
-            if pp1 + pp2 + gb1 + gb2 > 0:
+            if pp1 + pp2 + gb1 + gb2 > 0 and gb2 * pp1 > 0:
                 arr.append([[pp2, gb2], [pp1, gb1]])
+    if len(arr) == 0:
+        return 'NA', 'NA'
     arr = np.array(arr).T
     cmt = contingency_tables.StratifiedTable(tables=arr)
     odds_ratio = cmt.oddsratio_pooled
@@ -1819,6 +1821,7 @@ def process_gtf(fn_gtf, pwout):
             if i[0] != '#' or not i:
                 break
         f.seek(f.tell() - len(i))
+        skipped_transcript_on_random_chr = 0
         for i in f:
             line = i.strip().split('\t')
             # chr1    hg19_ncbiRefSeq    exon    66999252    66999355    0.000000    +    .    gene_id "NM_001308203.1"; transcript_id "NM_001308203.1"; gene_name "SGIP1";
@@ -1835,30 +1838,27 @@ def process_gtf(fn_gtf, pwout):
             if strand not in {'+', '-'}:
                 line_err = 'invalid_strand'
             chr_ = refine_chr(chr_)
-            if '_' in chr_:
-                continue # skip the line if the chr_ contains underscore (e.g. chr1_KI270706v1_random)
 
-            attributes = attribute_raw.rstrip(';').split(';')
-            gene_name = transcript_id = None
-            
-            for att in attributes:
-                try:
-                    k, v = att.strip().split(' ', 1)
-                except:
-                    continue
-                k = k.strip('"')
-                if k == 'transcript_id':
-                    transcript_id = v.strip('"')
-                elif k == 'gene_name':
-                    gene_name = v.strip('"')
-            if attribute_raw is None:
+            m = re.search(r'transcript_id\s+"?([\w._\-]+)', attribute_raw)
+            if m:
+                transcript_id = m.group(1)
+            else:
                 line_err = 'no_transcript_id'
-            if gene_name is None:
+                
+            m = re.search(r'gene_name\s+"?([\w._\-]+)', attribute_raw)
+            if m:
+                gene_name = m.group(1)
+            else:
                 line_err = 'gene_name_not_found'
+            
             if line_err:
                 err[line_err] += 1
                 continue
             
+            if '_' in chr_:
+                skipped_transcript_on_random_chr += 1
+                continue # skip the line if the chr_ contains underscore (e.g. chr1_KI270706v1_random)
+
             # {'chr': '', 'strand': '', 'gene_name': '', 'start': 0, 'end': 0}
             res_raw.setdefault(gene_name, {}).setdefault(transcript_id, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
             
@@ -1878,7 +1878,7 @@ def process_gtf(fn_gtf, pwout):
     # merge transcripts with same start and end position
     res = {}
     n_merged = 0
-    meta = {'initial_n_transcripts': 0, 'n_merged': 0, 'final_n_transcripts': 0}
+    meta = {'initial_n_transcripts': 0, 'n_merged': 0, 'final_n_transcripts': 0, 'skipped_transcript_on_random_chr': skipped_transcript_on_random_chr}
 
     for gn, v1 in res_raw.items():
         tmp = {}  # key = unique_id
@@ -1889,12 +1889,13 @@ def process_gtf(fn_gtf, pwout):
         for transcript_list in tmp.values():
             if len(transcript_list) > 1:
                 n_merged += len(transcript_list) - 1
-                meta['n_merged'] += n_merged
+                
             transcript_id_new = ';'.join(transcript_list)
             res[transcript_id_new] = v1[transcript_list[0]]
-
+    meta['n_merged'] = n_merged
     meta['final_n_transcripts'] = len(res)
-    logger.warning(f'merged {n_merged} transcripts with same start and end position')
+    logger.debug(f'g@merged {n_merged} transcripts with same start and end position')
+    logger.debug(meta)
     
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)

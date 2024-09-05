@@ -1799,7 +1799,7 @@ def process_gtf(fn_gtf, pwout):
         
         with open(fn_gtf_pkl, 'rb') as f:
             gtf_info = pickle.load(f)
-        if not os.path.exists(fn_tss):
+        if not os.path.exists(fn_tss) or not os.path.exists(fn_tss_tts):
             build_tss(gtf_info, fn_tss, fn_tss_tts)
         return gtf_info, fn_tss, fn_tss_tts, err
     
@@ -2394,7 +2394,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
     
     if filter:
         if not os.path.exists(fn_tss_tts):
-            logger.warning(f'no tss_tts file found, skip filtering')
+            logger.warning(f'no tss_tts file found {fn_tss_tts}, skip filtering')
         else:
             tss_tts_info = process_tss_tts(fn_tss_tts)
             enh_out_str = [line_str for line_str in enh_out_str if filter_by_tss_tts(line_str.split('\t', 3), tss_tts_info)]

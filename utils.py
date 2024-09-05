@@ -2276,6 +2276,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 fantom_sites[chr_] |= set(range(s, e + 1))
     
     # find association genes
+    logger.debug(fn_association)
     if fn_association:
         # #chrom	chromStart	chromEnd	name	score	strand	thickStart	thickEnd	itemRgb	blockCount	blockSizes	chromStarts
         # chr1	66797292	67198741	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0	385	.	67198540	67198541	0,0,0	2	1001,401,	0,401048,
@@ -2350,7 +2351,10 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                     iregion['start'] = s_minus
                 iregion['center_list'].append(str(center_pos))
                 iregion['fantom_list'].append('Y' if center_pos in fantom_sites[chr_] else 'N')
-                iregion['asso_list'].append(enh_sites[chr_][center_pos] if center_pos in enh_sites[chr_] else 'NA')
+                if enh_sites:
+                    iregion['asso_list'].append(enh_sites[chr_][center_pos] if chr_ in enh_sites and center_pos in enh_sites[chr_] else 'NA')
+                else:
+                    iregion['asso_list'].append('NA')
                 
                 len_minus_region = e_minus - s_minus
                 if len_minus_region > thres_long_eRNA:

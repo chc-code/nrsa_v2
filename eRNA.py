@@ -293,6 +293,7 @@ def main():
 
     if demo and os.path.exists(fn_enhancer_raw):
         logger.debug(f'skip finding enhancer due to demo mode')
+        lerna_out = 'already_exist'
     else:
         logger.info(f'Finding enhancer region')
         enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)

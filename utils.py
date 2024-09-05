@@ -2350,7 +2350,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 if s_minus < iregion['start']:
                     iregion['start'] = s_minus
                 iregion['center_list'].append(str(center_pos))
-                if fantom_sites
+                if fantom_sites:
                     iregion['fantom_list'].append('Y' if chr_ in fantom_sites and center_pos in fantom_sites[chr_] else 'N')
                 else:
                     iregion['fantom_list'].append('N')

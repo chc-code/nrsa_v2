@@ -5,6 +5,7 @@ process PROseq data
 import time
 s = time.time()
 import sys, os, re
+import logging
 import pickle
 import json
 from types import SimpleNamespace
@@ -40,11 +41,6 @@ def getargs():
     
     return args
 
-args = getargs()
-
-
-# print('after get args')
-# print(args)
 
 from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, get_ref_erna
 
@@ -130,8 +126,18 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         fh_file.name = 'file'
         logger.addHandler(fh_file)
     return logger
-logger = getlogger('NRSA.run.log', 'NRSA')
 
+pwouttmp = args.pwout
+fn_log = f'{pwouttmp}/pause_longeRNA.run.log'
+logger = getlogger(fn_log, 'NRSA')
+fn_log_base = os.path.basename(fn_log)
+if os.path.exists(fn_log_base):
+    os.unlink(fn_log_base)
+if os.path.exists(fn_log):
+    os.symlink(fn_log, fn_log_base)
+
+logger.debug(f'working in {os.getcwd()}')
+logger.debug(f'inpu args = {vars(args)}')
 
 class Analysis:
     def __init__(self, args, is_long_eRNA=False):

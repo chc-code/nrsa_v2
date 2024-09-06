@@ -5,6 +5,7 @@ import os, sys
 import re
 import traceback
 import pickle
+import logging
 
 # global var
 bin_dir = os.path.dirname(os.path.realpath(__file__))
@@ -125,26 +126,34 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         logger.addHandler(fh_file)
     return logger
 
-args = getarg()
-pwouttmp = args.pwout
-fn_log = f'{pwouttmp}/eRNA.run.log'
-logger = getlogger(fn_log, 'NRSA', verbose=args.v)
 
-fn_log_base = os.path.basename(fn_log)
-if os.path.exists(fn_log_base):
-    os.unlink(fn_log_base)
-os.symlink(fn_log, fn_log_base)
+def updatelogger(logger, fn_log, terminal_level=None):
+    handlers = list(logger.handlers)
+    handler_name_d = {v.name: idx for idx, v in enumerate(handlers)}
+    fh_console = handlers[handler_name_d['console']]
+    formatter = fh_console.formatter
+    valid_levels = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'}
+    if terminal_level:
+        terminal_level = terminal_level.upper()
+        if terminal_level not in valid_levels:
+            logger.error(f'invalid logging level: {terminal_level} ')
+            return logger
+    if fn_log and 'file' not in handler_name_d:
+        fh_file = logging.FileHandler(fn_log, mode='w', encoding='utf8')
+        fh_file.setLevel('DEBUG')
+        fh_file.setFormatter(formatter)
+        fh_file.name = 'file'
+        logger.addHandler(fh_file)
+    if terminal_level is not None:
+        fh_console.setLevel(terminal_level)
+    return logger
 
 
-logger.debug(f'working in {os.getcwd()}')
-logger.debug(f'inpu args = {vars(args)}')
+logger = getlogger(logger_name='NRSA')
 
-def main():
+def main(args):
     from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal
-    from types import SimpleNamespace
-    
-    
-    args = getarg()
+
     args_d = vars(args)
     demo = args.demo
     # in1, in2, pwout, organism, overlap_frac, cutoff, le, filter(0,1), 
@@ -735,9 +744,21 @@ def main():
 
 if __name__ == "__main__":
     args = getarg()
+    pwouttmp = args.pwout
+    fn_log = f'{pwouttmp}/eRNA.run.log'
+    fn_log_base = os.path.basename(fn_log)
+    terminal_level = 'DEBUG' if args.v else None
+    logger = updatelogger(logger, fn_log, terminal_level=terminal_level)
 
+    if os.path.exists(fn_log_base):
+        os.unlink(fn_log_base)
+    if os.path.exists(fn_log):
+        os.symlink(fn_log, fn_log_base)
+
+    logger.debug(f'working in {os.getcwd()}')
+    logger.debug(f'inpu args = {vars(args)}')
     try:
-        retcode = main()
+        retcode = main(args)
     except:
         e = traceback.format_exc()
         logger.error(e)

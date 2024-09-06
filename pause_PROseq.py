@@ -5,6 +5,7 @@ process PROseq data
 import time
 s = time.time()
 import sys, os, re
+import logging
 import pickle
 import json
 from types import SimpleNamespace
@@ -40,11 +41,6 @@ def getargs():
     
     return args
 
-args = getargs()
-
-
-# print('after get args')
-# print(args)
 
 from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf
 
@@ -131,11 +127,28 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         logger.addHandler(fh_file)
     return logger
 
-pwouttmp = args.pwout
-logger = getlogger(f'{pwouttmp}/NRSA.run.log', 'NRSA')
+def updatelogger(logger, fn_log, terminal_level=None):
+    handlers = list(logger.handlers)
+    handler_name_d = {v.name: idx for idx, v in enumerate(handlers)}
+    fh_console = handlers[handler_name_d['console']]
+    formatter = fh_console.formatter
+    valid_levels = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'}
+    if terminal_level:
+        terminal_level = terminal_level.upper()
+        if terminal_level not in valid_levels:
+            logger.error(f'invalid logging level: {terminal_level} ')
+            return logger
+    if fn_log and 'file' not in handler_name_d:
+        fh_file = logging.FileHandler(fn_log, mode='w', encoding='utf8')
+        fh_file.setLevel('DEBUG')
+        fh_file.setFormatter(formatter)
+        fh_file.name = 'file'
+        logger.addHandler(fh_file)
+    if terminal_level is not None:
+        fh_console.setLevel(terminal_level)
+    return logger
 
-logger.debug(f'working in {os.getcwd()}')
-logger.debug(f'inpu args = {vars(args)}')
+logger = getlogger(logger_name='NRSA')
 
 class Analysis:
     def __init__(self, args, is_long_eRNA=False):
@@ -745,18 +758,23 @@ def get_new_args(args, update_dict):
 
     
 if __name__ == "__main__":
-    logger.debug(vars(args))
+    args = getargs()
     
-    verbose = args.verbose
-    if verbose:
-        # set the "console" file handler to debug level
-        # get the file handles
-        handlers = logger.handlers
-        for h in handlers:
-            if h.name == 'console':
-                h.setLevel('DEBUG')
-                break
-        logger.debug(f'Verbose mode is on')
+    pwouttmp = args.pwout
+    fn_log = f'{pwouttmp}/NRSA.run.log'
+    fn_log_base = os.path.basename(fn_log)
+    terminal_level = 'DEBUG' if args.verbose else None
+    logger = updatelogger(logger, fn_log, terminal_level=terminal_level)
+
+    if os.path.exists(fn_log_base):
+        os.unlink(fn_log_base)
+    if os.path.exists(fn_log):
+        os.symlink(fn_log, fn_log_base)
+
+    logger.debug(f'working in {os.getcwd()}')
+    logger.debug(f'inpu args = {vars(args)}')
+    
+
     pwout_raw = os.path.realpath(args.pwout)
     logger.debug(f'pw_out_raw = {pwout_raw}')
     args.pwout = pwout_raw

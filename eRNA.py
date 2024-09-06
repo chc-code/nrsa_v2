@@ -265,7 +265,6 @@ def main():
         tmp = ['\t'.join(map(str, i)) for i in other_region]
         with open(fn_other_region, 'w') as o:
             print('\n'.join(tmp), file=o)
-
     logger.debug(f'other regions, n = {len(other_region)}')
 
     # load active genes
@@ -273,8 +272,13 @@ def main():
     logger.debug('loading active TSS')
     fn_active_genes = f'{pwout}/intermediate/active_gene.txt'
     fn_active_tss = f'{pwout}/intermediate/active_tss.txt'
+    ts_to_gn = {}
+    active_genes = set()
     with open(fn_active_genes) as f:
-        active_genes = {_.split('\t')[0] for _ in f if _.strip()}
+        for i in f:
+            ts, gn = i[:-1].split('\t')
+            active_genes.add(ts)
+            ts_to_gn[ts] = gn
 
     active_tss = {}
     with open(fn_tss) as f, open(fn_active_tss, 'w') as o:
@@ -282,9 +286,14 @@ def main():
         for i in f:
             line = i.split('\t')
             chr_, tss, ts = line[0], line[1], line[3]
+            chr_ = refine_chr(chr_)  # modify here, remove the refine_chr
+            
             if ts in active_genes:
-                o.write(i)
-                gn = gtf_info.get(ts, {}).get('gene_name', ts)
+                p1, p2 = i.split('\t', 1)
+                o.write(f'{chr_}\t{p2}')
+                
+                # o.write(i)
+                gn = ts_to_gn.get(ts, ts)
                 active_tss.setdefault(chr_, []).append([int(tss), gn])
     
     # sort
@@ -297,141 +306,148 @@ def main():
     fno_longerna = f'{pwout}/eRNA/long_eRNA.txt'
 
 
-    logger.info(f'Finding enhancer region')
-    enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
-    
-    # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
-    if enh_out:
-        with open(fn_enhancer_raw, 'w') as o:
-            print('\n'.join(enh_out), file=o)
-    else:
-        logger.warning(f'No enhancer found')
-        return 1
+    if not (demo and os.path.exists(fn_enhancer)):
+        logger.info(f'Finding enhancer region')
+        enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
+        
+        # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
+        if enh_out:
+            with open(fn_enhancer_raw, 'w') as o:
+                print('\n'.join(enh_out), file=o)
+        else:
+            logger.warning(f'No enhancer found')
+            return 1
 
-    status = sort_bed_like_file(fn_enhancer_raw)
-    if status:
-        return 1
-    
-    # save long_eRNA
-    # "chr","start","end","strand"
-    if lerna_out:
-        with open(fno_longerna, 'w') as o:
-            print('\t'.join(["chr","start","end","strand"]), file=o)
-            for i in lerna_out:
-                print('\t'.join(map(str, i)), file=o)
+        status = sort_bed_like_file(fn_enhancer_raw)
+        if status:
+            return 1
+        
+        # save long_eRNA
+        # "chr","start","end","strand"
+        if lerna_out:
+            with open(fno_longerna, 'w') as o:
+                print('\t'.join(["chr","start","end","strand"]), file=o)
+                for i in lerna_out:
+                    print('\t'.join(map(str, i)), file=o)
 
-    # find closest gene for enhancer
-    logger.info(f'Finding closest TSS for enhancer')
-    fno_closest = f'{pwout}/intermediate/closest.txt'
-    cmd = f'bedtools closest -a {fn_enhancer_raw} -b {fn_active_tss} -d > {fno_closest}'
-    status = run_shell(cmd, echo=True)
-    if status:
-        logger.error(f'fail to run bedtools closest')
-        return 1
+        # find closest gene for enhancer
+        logger.info(f'Finding closest TSS for enhancer')
+        fno_closest = f'{pwout}/intermediate/closest.txt'
+        cmd = f'bedtools closest -a {fn_enhancer_raw} -b {fn_active_tss} -d > {fno_closest}'
+        status = run_shell(cmd, echo=True)
+        if status:
+            logger.error(f'fail to run bedtools closest')
+            return 1
 
-    # process closest result
-    # last column will be the distance, if overlap, will be 0
-    logger.debug('processing bedtools closest results')
-    res_closest = {}  # k = enhancer_info, v = {'closeclosest_gene_gene': [],  distance: distance}
-    center_str = {} # key = each center_point, v = chr, center point, fantom
-    center_enhancer = {}  # k = each center point, v = whole enhancer info
-    with open(fno_closest) as f:
-        for i in f:
-            line = i[:-1].rsplit('\t', 6) # first 6 cols = enhancer info, then tss info [chr(col7), s, s , ts(col10), strand (col11)],  col12 = distance
-            distance = int(line[-1])
-            enhancer_info = line[0]
-            ts = line[-3]
-            
-            if distance == -1:
-                continue
-            res_closest.setdefault(enhancer_info, {'closest_gene': [], 'distance': distance})
-            gn = gtf_info.get(ts, {}).get('gene_name', ts)
-            res_closest[enhancer_info]['closest_gene'].append(gn)
-            res_closest[enhancer_info]['distance'] = distance
-            chr_, _, _, center_list, fantom_list, asso_list = enhancer_info.split('\t')
-            for icenter, ifantom in zip(center_list.split(','), fantom_list.split(',')):
-                k_center = f'{chr_}:{icenter}'
-                if k_center not in center_str:
-                    center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
-                    center_enhancer[k_center] = enhancer_info
-    logger.debug(f'enhancer_closest gene, n = {len(res_closest)}, center_count = {len(center_enhancer)}')
-
-    fn_4d = ref_fls['4d']
-    d_4d = {}
-    if fn_4d is not None:
-        # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
-        with open(fn_4d) as f:
-            # no header
+        # process closest result
+        # last column will be the distance, if overlap, will be 0
+        logger.debug('processing bedtools closest results')
+        res_closest = {}  # k = enhancer_info, v = {'closeclosest_gene_gene': [],  distance: distance}
+        center_str = {} # key = each center_point, v = chr, center point, fantom
+        center_enhancer = {}  # k = each center point, v = whole enhancer info
+        with open(fno_closest) as f:
             for i in f:
-                line = i[:-1].split('\t')
-                chr_ = refine_chr(line[0])
-                d_4d.setdefault(chr_, []).append([line[_] for _ in [1, 2, 6, 7, 8, 9]]) #  s, e, gn, cell, method, pmid 
-    
-    logger.info(f'Finding associated genes within 50kb and 4DGenome')
-    tss50k = {} # window_active_genes = 50k
-    res_4d = {}
-    for enhancer_info in sorted(res_closest):
-        # closest_info = res_closest[enhancer_info]
-        chr_, start, end, center_list, fantom_list, asso_list = enhancer_info.split('\t')
-        start, end = int(start), int(end)
-        for tss_pos, gn in active_tss[chr_]:
-            if (tss_pos > end and tss_pos - end < window_active_genes) or (tss_pos < start and start - tss_pos < window_active_genes):
-                tss50k.setdefault(enhancer_info, set()).add(gn)
+                line = i[:-1].rsplit('\t', 6) # first 6 cols = enhancer info, then tss info [chr(col7), s, s , ts(col10), strand (col11)],  col12 = distance
+                distance = int(line[-1])
+                enhancer_info = line[0]
+                ts = line[-3]
                 
-        if chr_ in d_4d:
-            for info_4d in d_4d[chr_]:
-                # s, e, gn, cell, method, pmid 
-                s_4d, e_4d, gn_list, cell, method, pmid = info_4d
-                s_4d, e_4d = int(s_4d), int(e_4d)
-                if (start <= s_4d <= end) or (start <= e_4d <= end) or (s_4d <= start <= e_4d) or (s_4d <= end <= e_4d):  # there are overlap
-                    ires = res_4d.setdefault(enhancer_info, {'gn': set(), 'cell': set(), 'method': set(), 'pmid': set()})
-                    ires['gn'] |= set(gn_list.strip(';').split(';'))
-                    ires['cell'].add(cell)
-                    ires['method'].add(method)
-                    ires['pmid'].add(pmid)
-                    
-    # save to Enhancer.txt again
-    enhancer_id_map = {}
-    enhancer_id = 1
-    with open(fn_enhancer, 'w') as o:
-        print("Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell_Tissue\tDetection_method\tPMID\tclosest_gene\tdistance", file=o)
-        for enhancer_info in sorted(res_closest):
-            col_tss50k = tss50k.get(enhancer_info, ['NA'])
-            col_tss50k = ','.join(sorted(col_tss50k))
-            
-            info_4d = res_4d.get(enhancer_info, None)
-            if info_4d:
-                cols_4d = '\t'.join([','.join(sorted(info_4d[_])) for _ in ['gn', 'cell', 'method', 'pmid']])
-            else:
-                cols_4d = 'NA\tNA\tNA\tNA'
-            
-            closest_info = res_closest.get(enhancer_info)
-            if closest_info:
-                col_closest = closest_info['closest_gene']
-                col_distance = str(closest_info['distance'])
-                if col_closest:
-                    col_closest = ','.join(sorted(col_closest))
-                else:
-                    col_closest = 'NA'
-            else:
-                col_closest,col_distance = 'NA', '-1'
-            print('\t'.join([str(enhancer_id), enhancer_info, col_tss50k, cols_4d, col_closest, col_distance]), file=o)
-            enhancer_id_map[enhancer_info] = str(enhancer_id)
-            enhancer_id += 1
-            
-    # save center_str
-    # center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
-    fn_center = f'{pwout}/eRNA/Enhancer_center.txt'
-    center_out = []
-    with open(fn_center, 'w') as o:
-        print('\t'.join(["chr","position","FONTOM5","Enhancer_ID"]), file=o)
-        for k_center, v in center_str.items():
-            enhancer_info = center_enhancer[k_center]
-            enhancer_id = enhancer_id_map[enhancer_info]
-            print(f'{v}\t{enhancer_id}', file=o)
-    
+                if distance == -1:
+                    continue
+                res_closest.setdefault(enhancer_info, {'closest_gene': [], 'distance': distance})
+                gn =  ts_to_gn.get(ts, ts)
+                res_closest[enhancer_info]['closest_gene'].append(gn)
+                res_closest[enhancer_info]['distance'] = distance
+                chr_, _, _, center_list, fantom_list, asso_list = enhancer_info.split('\t')
+                for icenter, ifantom in zip(center_list.split(','), fantom_list.split(',')):
+                    k_center = f'{chr_}:{icenter}'
+                    if k_center not in center_str:
+                        center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
+                        center_enhancer[k_center] = enhancer_info
+        logger.debug(f'enhancer_closest gene, n = {len(res_closest)}, center_count = {len(center_enhancer)}')
 
-    
+        fn_4d = ref_fls['4d']
+        d_4d = {}
+        if fn_4d is not None:
+            # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
+            with open(fn_4d) as f:
+                # no header
+                for i in f:
+                    line = i[:-1].split('\t')
+                    chr_ = refine_chr(line[0])
+                    d_4d.setdefault(chr_, []).append([line[_] for _ in [1, 2, 6, 7, 8, 9]]) #  s, e, gn, cell, method, pmid 
+        
+        logger.info(f'Finding associated genes within 50kb and 4DGenome')
+        tss50k = {} # window_active_genes = 50k
+        res_4d = {}
+        for enhancer_info in sorted(res_closest):
+            # closest_info = res_closest[enhancer_info]
+            chr_, start, end, center_list, fantom_list, asso_list = enhancer_info.split('\t')
+            start, end = int(start), int(end)
+            for tss_pos, gn in active_tss[chr_]:
+                if (tss_pos > end and tss_pos - end < window_active_genes) or (tss_pos < start and start - tss_pos < window_active_genes):
+                    tss50k.setdefault(enhancer_info, set()).add(gn)
+                    
+            if chr_ in d_4d:
+                for info_4d in d_4d[chr_]:
+                    # s, e, gn, cell, method, pmid 
+                    s_4d, e_4d, gn_list, cell, method, pmid = info_4d
+                    s_4d, e_4d = int(s_4d), int(e_4d)
+                    if (start <= s_4d <= end) or (start <= e_4d <= end) or (s_4d <= start <= e_4d) or (s_4d <= end <= e_4d):  # there are overlap
+                        ires = res_4d.setdefault(enhancer_info, {'gn': set(), 'cell': set(), 'method': set(), 'pmid': set()})
+                        ires['gn'] |= set(gn_list.strip(';').split(';'))
+                        ires['cell'].add(cell)
+                        ires['method'].add(method)
+                        ires['pmid'].add(pmid)
+                        
+        # save to Enhancer.txt again
+        enhancer_id_map = {}
+        enhancer_id = 1
+        with open(fn_enhancer, 'w') as o:
+            print("Enhancer_ID\tchr\tstart\tend\tcenter\tFANTOM5\tassociated_gene-FANTOM5\tassociated_gene-50kb\tassociated_gene-4DGenome\tCell_Tissue\tDetection_method\tPMID\tclosest_gene\tdistance", file=o)
+            for enhancer_info in sorted(res_closest):
+                col_tss50k = tss50k.get(enhancer_info, ['NA'])
+                col_tss50k = ','.join(sorted(col_tss50k))
+                
+                info_4d = res_4d.get(enhancer_info, None)
+                if info_4d:
+                    cols_4d = '\t'.join([','.join(sorted(info_4d[_])) for _ in ['gn', 'cell', 'method', 'pmid']])
+                else:
+                    cols_4d = 'NA\tNA\tNA\tNA'
+                
+                closest_info = res_closest.get(enhancer_info)
+                if closest_info:
+                    col_closest = closest_info['closest_gene']
+                    col_distance = str(closest_info['distance'])
+                    if col_closest:
+                        col_closest = ','.join(sorted(col_closest))
+                    else:
+                        col_closest = 'NA'
+                else:
+                    col_closest,col_distance = 'NA', '-1'
+                print('\t'.join([str(enhancer_id), enhancer_info, col_tss50k, cols_4d, col_closest, col_distance]), file=o)
+                enhancer_id_map[enhancer_info] = str(enhancer_id)
+                enhancer_id += 1
+                
+        # save center_str
+        # center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
+        fn_center = f'{pwout}/eRNA/Enhancer_center.txt'
+        center_out = []
+        with open(fn_center, 'w') as o:
+            print('\t'.join(["chr","position","FONTOM5","Enhancer_ID"]), file=o)
+            for k_center, v in center_str.items():
+                enhancer_info = center_enhancer[k_center]
+                enhancer_id = enhancer_id_map[enhancer_info]
+                print(f'{v}\t{enhancer_id}', file=o)
+        
+        # currently, the results excatly match with version1
+        os.unlink(fn_enhancer_raw)
+        # logger.info(f'uncomment above')
+    else:
+        logger.warning(f'debug mode, skip get enhancer steps')
+
+        
+        
     # enhancer region short
     fn_enhancer_short = f'{pwout}/intermediate/Enhancer_temp.bed'
     k_enhancer_map = {}
@@ -470,9 +486,8 @@ def main():
     if status:
         return 1
     # logger.info(fn_enhancer_short)
-    os.unlink(fn_enhancer_raw)
-    # logger.info(f'uncomment above')
-    
+
+
     logger.info('Detecting Enhancer change...')
     n_ctrl, n_case = len(in1), len(in2)
     factors_d = {}  # key = fn_lb, v = nf value
@@ -521,7 +536,8 @@ def main():
         for k_enhancer, v in enhancer_count.items():
             enhancer_id = k_enhancer_map[k_enhancer]
             print(f'{enhancer_id}\t{k_enhancer}\t' + '\t'.join(v), file=o)
-        
+    os.system(f'sort -k 1,1n {fn_count_enhancer} > {fn_count_enhancer}.tmp && mv {fn_count_enhancer}.tmp {fn_count_enhancer}')
+    
     # change_enhancer
     logger.info(f'change_enhancer')
     sam_ctrl = [_[0] for _ in in1]

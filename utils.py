@@ -1701,22 +1701,6 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
     # logger.info(data_out.head())
 
 
-def change_enhancer(fn, out_dir, condition, rep1, rep2, factor1=None, factor2=None, factor_flag=0):
-    """
-    fn = intermediate/count_enhancer.txt
-    
-    condition can be 1 or 2,  for 2, it is case-control design, and for 1, it is ctrl only
-    """
-    n_total_sam = rep1 + rep2
-    fno_change = f'{out_dir}/eRNA/Enhancer_change.txt'
-    fno_norm = f'{out_dir}/eRNA/normalized_count_enhancer.txt'
-    
-    # fn input header
-    # Enhancer_ID	chr	start	end	sam1, sam2 ....
-    
-    # ctrl only
-    if condition == 1:
-        pass
     
 def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
     strand = gene_info['strand']
@@ -2275,30 +2259,31 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 if chr_ not in fantom_sites:
                     fantom_sites[chr_] = set()
                 fantom_sites[chr_] |= set(range(s, e + 1))
-    
-    # find association genes
 
     if fn_association:
-        # #chrom	chromStart	chromEnd	name	score	strand	thickStart	thickEnd	itemRgb	blockCount	blockSizes	chromStarts
-        # chr1	66797292	67198741	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0	385	.	67198540	67198541	0,0,0	2	1001,401,	0,401048,
         # actually the strand column in all rows are dot
+        # 1:	#chrom	chr1
+        # 2:	chromStart	66797292
+        # 3:	chromEnd	67198741
+        # 4:	name	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0
+        # 5:	score	385
 
         with open(fn_association) as f:
             f.readline()
             for i in f:
-                chr_, s, e, info = i[:-1].split('\t', 4)[:4]
+                chr_, _, _, info = i[:-1].split('\t', 4)[:4]
                 info = info.split(';')
                 if len(info) < 5:
                     continue
                 e_chr, e_start, e_end = re.split(r'[-:]', info[0])
-                e_start, e_end = int(e_start), int(e_end)
+                e_chr, e_start, e_end = refine_chr(e_chr), int(e_start), int(e_end)
+
                 assoc_gn = info[2]
-                e_chr = refine_chr(e_chr)
                 if e_chr not in enh_sites:
                     enh_sites[e_chr] = {}
                 for i in range(e_start, e_end + 1):
                     enh_sites[e_chr].setdefault(i, set()).add(assoc_gn)
-    
+
     logger.debug(f'enh_sites keys = {sorted(enh_sites)}')
     
     # the gene list value to string 
@@ -2308,6 +2293,15 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
         for k2, v2 in v1.items():
             tmp[k1][k2] = ','.join(sorted(v2))
     enh_sites = tmp
+    
+    # dump to pickle
+    # logger.warning(f'modify here, dump fantom_sites pkl')
+    # fantom_sites_tmp = {k: sorted(v) for k, v in fantom_sites.items()}
+    # with open(f'fantom_sites.pkl', 'wb') as o:
+    #     pickle.dump(fantom_sites_tmp, o)
+    
+    # with open(f'enh_sites.pkl', 'wb') as o:
+    #     pickle.dump(enh_sites, o)
     
     # find center of enhancers
     enhancer_region = {}
@@ -2396,6 +2390,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
             iregion['asso_list'] = []
             for center_pos in iregion['center_list']:
                 fantom_v, asso_v = 'N', 'NA'
+                center_pos = int(center_pos)
                 fantom_v = 'Y' if fantom_sites and chr_ in fantom_sites and center_pos in fantom_sites[chr_] else 'N'
                 asso_v = 'NA'
                 if enh_sites and chr_ in enh_sites and center_pos in enh_sites[chr_]:
@@ -2405,9 +2400,9 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 iregion['asso_list'].append(asso_v)
             enh_out.append(iregion)
 
-
     enh_out_str = ['\t'.join([i['chr'], str(i['start']), str(i['end']), ','.join(i['center_list']), ','.join(i['fantom_list']), ';'.join(i['asso_list'])]) for i in enh_out]
     lerna_out = sorted([_.split('\t') for _ in lerna_out], key=lambda x: (x[0], int(x[1]), int(x[2])))
+
     
     if filter:
         if not os.path.exists(fn_tss_tts):
@@ -2518,6 +2513,11 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     data = pd.read_csv(fn_count_enhancer, sep='\t')
     data['Enhancer_ID'] = data['Enhancer_ID'].astype(str)
     fn_norm = f'{pwout}/eRNA/normalized_count_enhancer.txt'
+    
+    # Enhancer_ID	chr	start	end	4104-AW-1_sorted_rRNArm-F4q10	4104-AW-3_sorted_rRNArm-F4q10	4104-AW-2_sorted_rRNArm-F4q10	4104-AW-4_sorted_rRNArm-F4q10
+    # 1	chr1	100080885	100091297	241	329	249	282
+    # 2	chr1	103618441	103638394	3140	4570	3455	3746
+
     if condition == 1:
         # no case samples
         if n_ctrl == 1:
@@ -2527,8 +2527,9 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     else:
         # with case, will also calculate the Enhancer_change
         fn_change = f'{pwout}/eRNA/Enhancer_change.txt'
-        data_change = data.iloc[:, :4].copy()
+        
         if n_case + n_ctrl == 2:
+            data_change = data.iloc[:, :4].copy()
             # each condition only have a single sample
             sam_ctrl, sam_case = sam_ctrl[0], sam_case[0]
             fc = ((data[sam_case] + 1) * factors_d[sam_case]) / ((data[sam_ctrl] + 1) * factors_d[sam_ctrl])
@@ -2542,7 +2543,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
             })
             
             ref_level = 'control'
-            size_factors_in = np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
+            size_factors_in = 1 / np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
             with HiddenPrints():
                 res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
                 size_factors_in=size_factors_in)

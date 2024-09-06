@@ -2262,7 +2262,8 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
 
     fantom_sites= {} # k1 = chr, k2 = each pos
     enh_sites = {}
-    
+
+    logger.debug(f'{fn_fantom}, {fn_association}')
     if fn_fantom:
         # chr1	839741	840250	chr1:839741-840250	24	.	839787	839788	0,0,0	2	20,436	0,73
         # chr1	840753	841210	chr1:840753-841210	32	.	840811	840812	0,0,0	2	8,347	0,110
@@ -2276,7 +2277,7 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 fantom_sites[chr_] |= set(range(s, e + 1))
     
     # find association genes
-    logger.debug(fn_association)
+
     if fn_association:
         # #chrom	chromStart	chromEnd	name	score	strand	thickStart	thickEnd	itemRgb	blockCount	blockSizes	chromStarts
         # chr1	66797292	67198741	chr1:67198280-67198800;NM_001037339;PDE4B;R:0.385;FDR:0	385	.	67198540	67198541	0,0,0	2	1001,401,	0,401048,
@@ -2322,15 +2323,18 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
         for s_plus, e_plus in plus_region:
             len_plus_region = e_plus - s_plus
             is_long_eRNA_plus = True if len_plus_region > thres_long_eRNA else False
-            iregion = {'start': e_plus, 'end': e_plus, 'center_list': [], 'fantom_list': [], 'asso_list': []}
+            iregion = {'start': e_plus, 'end': e_plus, 'center_list': []}
             
             # get the loop start for minus_region
             idx_minus_region = bisect.bisect_left(minus_region_e, s_plus - lcut) # from this index and after, all with d < lcut
-            for s_minus, e_minus in minus_region[idx_minus_region:]:
-                if s_minus >= e_plus:
-                    break
+            minus_region_sort_by_start = sorted(minus_region[idx_minus_region:])
+            for s_minus, e_minus in minus_region_sort_by_start:
                 if s_plus < s_minus and e_plus <= e_minus:
                     continue
+                if s_minus > e_plus:
+                    # -------->
+                    #             <----------
+                    break  
                 
                 distance = s_plus - e_minus
                 if distance > lcut:
@@ -2338,7 +2342,9 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 
                 if s_minus < s_plus and e_minus <= e_plus:
                     # minus is before plus or have partial overlap
-                    center_pos = s_plus - distance // 2
+                    # ------------------->
+                    #        <--------------------
+                    center_pos = s_plus - (int(distance / 2))
                 elif s_minus >= s_plus and e_minus < e_plus:
                     # minus region is inside of plus
                     center_pos = e_minus
@@ -2350,45 +2356,56 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 if s_minus < iregion['start']:
                     iregion['start'] = s_minus
                 iregion['center_list'].append(str(center_pos))
-                if fantom_sites:
-                    iregion['fantom_list'].append('Y' if chr_ in fantom_sites and center_pos in fantom_sites[chr_] else 'N')
-                else:
-                    iregion['fantom_list'].append('N')
-                if enh_sites:
-                    iregion['asso_list'].append(enh_sites[chr_][center_pos] if chr_ in enh_sites and center_pos in enh_sites[chr_] else 'NA')
-                else:
-                    iregion['asso_list'].append('NA')
-                
                 len_minus_region = e_minus - s_minus
                 if len_minus_region > thres_long_eRNA:
                     lerna_out.add('\t'.join(map(str, [chr_, s_minus, e_minus, '-'])))
-                
             # plus region is longeRNA
             n_centers = len(iregion['center_list'])
             if is_long_eRNA_plus and n_centers > 0:
                 lerna_out.add('\t'.join(map(str, [chr_, s_plus, e_plus, '+'])))
-            
             if n_centers > 0:
                 # thre are matched minus strand to make a region
-                enhancer_region[chr_][e_plus] = iregion
+                if e_plus not in enhancer_region[chr_]:
+                    iregion['center_list'] = sorted(iregion['center_list'])
+                    enhancer_region[chr_][e_plus] = iregion
+                else:
+                    # merge them
+                    if iregion['start'] < enhancer_region[chr_][e_plus]['start']:
+                        enhancer_region[chr_][e_plus]['start'] = iregion['start']
+                    enhancer_region[chr_][e_plus]['center_list'] = sorted(set(enhancer_region[chr_][e_plus]['center_list']) | set(iregion['center_list']))
     
-    tmp = sum([len(v) for v in enhancer_region.values()])
-    logger.debug(f'enhancer_region, n = {tmp}')
+    
     # combine adjacent regions
     enh_out = []
+    n_merged_region = 0
     for chr_, v1 in enhancer_region.items():
-        prev_region = None
+        enh_out_chr = []
         for region_end in sorted(v1):
             iregion = v1[region_end]
             iregion['chr'] = chr_
+            prev_region = enh_out_chr[-1] if enh_out_chr else None # last region
             if prev_region and iregion['start'] - prev_region['end'] < distance_for_merge:
                 prev_region['end'] = iregion['end']
-                prev_region['center_list'] += iregion['center_list']
-                prev_region['fantom_list'] += iregion['fantom_list']
-                prev_region['asso_list'] += iregion['asso_list']
+                prev_region['center_list'] = sorted(iregion['center_list'] + prev_region['center_list'])
+                n_merged_region += 1
             else:
-                enh_out.append(iregion)
-            prev_region =iregion
+                enh_out_chr.append(iregion)
+        
+        for iregion in enh_out_chr:
+            iregion['fantom_list'] = []
+            iregion['asso_list'] = []
+            for center_pos in iregion['center_list']:
+                fantom_v, asso_v = 'N', 'NA'
+                fantom_v = 'Y' if fantom_sites and chr_ in fantom_sites and center_pos in fantom_sites[chr_] else 'N'
+                asso_v = 'NA'
+                if enh_sites and chr_ in enh_sites and center_pos in enh_sites[chr_]:
+                    asso_v = enh_sites[chr_][center_pos]
+                
+                iregion['fantom_list'].append(fantom_v)
+                iregion['asso_list'].append(asso_v)
+            enh_out.append(iregion)
+
+
     enh_out_str = ['\t'.join([i['chr'], str(i['start']), str(i['end']), ','.join(i['center_list']), ','.join(i['fantom_list']), ';'.join(i['asso_list'])]) for i in enh_out]
     lerna_out = sorted([_.split('\t') for _ in lerna_out], key=lambda x: (x[0], int(x[1]), int(x[2])))
     
@@ -2415,7 +2432,13 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
             #         logger.error(f'invalid input for filter: lerna, line = \n{line}')
             #         sys.exit(1)
 
-    
+    n_enhancer_raw = sum([len(v) for v in enhancer_region.values()])
+    n_enhancer_after_merge = len(enh_out)
+    exp_after_merge = n_enhancer_raw-n_merged_region
+    n_enhancer_after_filtering = len(enh_out_str)
+    logger.debug(f'enhancer_region, n_enhancer_raw = {n_enhancer_raw}, merged = {n_merged_region}, exp after_merge = {exp_after_merge},actual ={n_enhancer_after_merge}, match = {exp_after_merge == n_enhancer_after_merge}, n_enhancer_after_filtering={n_enhancer_after_filtering}')
+
+
     # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
     return enh_out_str, lerna_out, 
             

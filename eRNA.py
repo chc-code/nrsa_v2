@@ -296,33 +296,30 @@ def main():
     fn_fantom, fn_association = [ref_fls[_] for _ in ['fantom', 'association']]
     fno_longerna = f'{pwout}/eRNA/long_eRNA.txt'
 
-    if demo and os.path.exists(fn_enhancer_raw):
-        logger.debug(f'skip finding enhancer due to demo mode')
-        lerna_out = 'already_exist'
-    else:
-        logger.info(f'Finding enhancer region')
-        enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
-        
-        # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
-        if enh_out:
-            with open(fn_enhancer_raw, 'w') as o:
-                print('\n'.join(enh_out), file=o)
-        else:
-            logger.warning(f'No enhancer found')
-            return 1
 
-        status = sort_bed_like_file(fn_enhancer_raw)
-        if status:
-            return 1
-        
-        # save long_eRNA
-        # "chr","start","end","strand"
-        if lerna_out:
-            with open(fno_longerna, 'w') as o:
-                print('\t'.join(["chr","start","end","strand"]), file=o)
-                for i in lerna_out:
-                    print('\t'.join(map(str, i)), file=o)
+    logger.info(f'Finding enhancer region')
+    enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
     
+    # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
+    if enh_out:
+        with open(fn_enhancer_raw, 'w') as o:
+            print('\n'.join(enh_out), file=o)
+    else:
+        logger.warning(f'No enhancer found')
+        return 1
+
+    status = sort_bed_like_file(fn_enhancer_raw)
+    if status:
+        return 1
+    
+    # save long_eRNA
+    # "chr","start","end","strand"
+    if lerna_out:
+        with open(fno_longerna, 'w') as o:
+            print('\t'.join(["chr","start","end","strand"]), file=o)
+            for i in lerna_out:
+                print('\t'.join(map(str, i)), file=o)
+
     # find closest gene for enhancer
     logger.info(f'Finding closest TSS for enhancer')
     fno_closest = f'{pwout}/intermediate/closest.txt'
@@ -473,7 +470,7 @@ def main():
     if status:
         return 1
     # logger.info(fn_enhancer_short)
-    
+    os.unlink(fn_enhancer_raw)
     # logger.info(f'uncomment above')
     
     logger.info('Detecting Enhancer change...')

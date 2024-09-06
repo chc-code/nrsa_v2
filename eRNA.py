@@ -192,7 +192,6 @@ def main():
         return status
     
     # make homder tags
-    # logger.info('modify here, uncomment')
     fn_peak_txt, fn_peak_gtf = f'{pwout}/intermediate/transcript.txt', f'{pwout}/intermediate/transcript.gtf'
     if not (demo and os.path.exists(f'{pw_homer}/tagInfo.txt')):
         bed_list = ' '.join([_[1] for _ in in1 + in2])
@@ -260,7 +259,6 @@ def main():
     fn_enhancer_short = f'{pwout}/intermediate/Enhancer_temp.bed'
     fn_count_enhancer = f'{pwout}/intermediate/count_enhancer.txt'
 
-    # logger.info('modify here, uncomment')
     
     if demo and os.path.exists(fn_pkl_other_region):
         logger.debug(f'loading previous gtf_compare results: {fn_pkl_other_region}')
@@ -300,7 +298,7 @@ def main():
         for i in f:
             line = i.split('\t')
             chr_, tss, ts = line[0], line[1], line[3]
-            chr_ = refine_chr(chr_)  # modify here, remove the refine_chr
+            chr_ = refine_chr(chr_)
             
             if ts in active_genes:
                 p1, p2 = i.split('\t', 1)

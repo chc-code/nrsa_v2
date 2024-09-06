@@ -738,15 +738,16 @@ def get_line_count(fn):
 
 def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
 
-    logger.warning(f'modify here')
-    if not os.path.exists(fn_coverage):
-        logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
-        cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
-        retcode, stdout, stderr = run_shell(cmd, ret_info=True)
-        if retcode:
-            logger.error(f'failed to run bedtools coverage for {fn_lb}')
-            logger.debug(stderr)
-            return 1
+    # logger.warning(f'modify here')
+    # if not os.path.exists(fn_coverage):
+    
+    logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
+    cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
+    retcode, stdout, stderr = run_shell(cmd, ret_info=True)
+    if retcode:
+        logger.error(f'failed to run bedtools coverage for {fn_lb}')
+        logger.debug(stderr)
+        return 1
     # process the coverage file
     # chr1	323932	323952	1   10
     count = {}

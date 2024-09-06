@@ -736,18 +736,19 @@ def get_line_count(fn):
             n += 1
     return n
 
-def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
-
+def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage, demo=False):
     # logger.warning(f'modify here')
-    # if not os.path.exists(fn_coverage):
-    
-    logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
-    cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
-    retcode, stdout, stderr = run_shell(cmd, ret_info=True)
-    if retcode:
-        logger.error(f'failed to run bedtools coverage for {fn_lb}')
-        logger.debug(stderr)
-        return 1
+    # if not :
+    if demo and os.path.exists(fn_coverage):
+        logger.debug(f'skipped bedtools coverage for enhancer center, {fn_lb}')
+    else:
+        logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
+        cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
+        retcode, stdout, stderr = run_shell(cmd, ret_info=True)
+        if retcode:
+            logger.error(f'failed to run bedtools coverage for {fn_lb}')
+            logger.debug(stderr)
+            return 1
     # process the coverage file
     # chr1	323932	323952	1   10
     count = {}
@@ -759,7 +760,7 @@ def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
             count[bin_sn] += int(ict)
     return {int(k): v for k, v in count.items()}
 
-def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance=2000, bin_size=20, signal_type='p'):
+def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance=2000, bin_size=20, signal_type='p', demo=False):
     # fn_enhancer_center #enhancer central position file, the output of eRNA.pl (Enhancer_centralposition.txt); required, enhancer central position file, the output of eRNA.pl (Enhancer_center.txt), or the file of chromation location of interest (should contains at least two columns separated by tab or space, e.g "chr11	83078317")
     # example line = chr1	565340	565340	+, no header
     
@@ -851,7 +852,7 @@ def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance
     # get the signal results
     for fn_lb, fn_bed in fls_ctrl + fls_case:
         fn_coverage = f'{pwinter}/{fn_lb}.signal.coverage.txt'
-        isignal = calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage)
+        isignal = calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage, demo=demo)
         if isignal == 1:
             logger.error(f'Fail to process signal for {fn_lb} around the enhancer centers')
             return 1
@@ -912,7 +913,10 @@ def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance
         sam_idx = 0
         n_sam_condition = len(fls)
         for fn_lb, _ in fls:
-            normalized_index = sam_idx / (n_sam_condition - 1)
+            if n_sam_condition > 1:
+                normalized_index = sam_idx / (n_sam_condition - 1)
+            else:
+                normalized_index = 0
             linestyle = linestyle_pool[sam_idx % len_line_styles]
             plt.plot(data['position'], data[fn_lb], color=colors(normalized_index), linestyle=linestyle, label=fn_lb, linewidth=0.9)
             sam_idx += 1

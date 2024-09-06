@@ -552,7 +552,7 @@ def main():
     # draw signal
     logger.info('Drawing signal around enhancer center...')
     signal_type = 'p'
-    draw_signal(pwout, fn_enhancer_center, in1, in2, chr_map_to_raw_bed, signal_type=signal_type)
+    draw_signal(pwout, fn_enhancer_center, in1, in2, chr_map_to_raw_bed, signal_type=signal_type, demo=demo)
     
     # pause longeRNA
     

@@ -737,15 +737,18 @@ def get_line_count(fn):
     return n
 
 def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
-    s = time.time()
-    cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
-    retcode = run_shell(cmd)
-    if retcode:
-        logger.error(f'failed to run bedtools coverage for {fn_lb}')
-        return 1
+
+    logger.warning(f'modify here')
+    if not os.path.exists(fn_coverage):
+        logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
+        cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
+        retcode, stdout, stderr = run_shell(cmd, ret_info=True)
+        if retcode:
+            logger.error(f'failed to run bedtools coverage for {fn_lb}')
+            logger.debug(stderr)
+            return 1
     # process the coverage file
     # chr1	323932	323952	1   10
-    logger.debug(f'bedtools coverage for {fn_lb}, done, time used = {dur:.2f}s')
     count = {}
     with open(fn_coverage) as f:
         for i in f:
@@ -753,9 +756,9 @@ def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage):
             bin_sn, ict = line[3], line[4]
             count.setdefault(bin_sn, 0)
             count[bin_sn] += int(ict)
-    return count
+    return {int(k): v for k, v in count.items()}
 
-def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin_size=20, signal_type='p'):
+def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance=2000, bin_size=20, signal_type='p'):
     # fn_enhancer_center #enhancer central position file, the output of eRNA.pl (Enhancer_centralposition.txt); required, enhancer central position file, the output of eRNA.pl (Enhancer_center.txt), or the file of chromation location of interest (should contains at least two columns separated by tab or space, e.g "chr11	83078317")
     # example line = chr1	565340	565340	+, no header
     
@@ -763,29 +766,35 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
     # my $bin_size=20; #bin size for smoothing;
     # my @case_bed;	#read alignment files in bed/bam format (case);
     # my @control_bed;	#read alignment files in bed/bam format (control);
-    # my $signal="p"; The signal type (-s) should be either 'p' or 'o', p - signal for PROseq was input in pause_PROseq.pl; o - signal for other data such as histone modification (default: p)
+    # my $signal_type="p"; The signal_type (-s) should be either 'p' or 'o', p - signal for PROseq was input in pause_PROseq.pl; o - signal for other data such as histone modification (default: p)
+
+    # fn_enhancer_center is like below, with header
+    # chr	position	FONTOM5	Enhancer_ID
+    # 1	8215322	N	95
+    # 1	8299373	N	96
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+
     fls_case = fls_case or []
     if signal_type not in {'p', 'o'}:
         logger.error(f'invalid signal type: {signal_type}, valid = "p" or "o"')
         return 1
-    pwout = f'{pwprj}/eRNA'
+    pwerna = f'{pwout}/eRNA'
     pwinter = f'{pwout}/intermediate'
-    fn_padding = f'{fn_enhancer_center}.padding.tmp'
-    fn_split_bin_bed = f'{fn_enhancer_center}.split_regions.bed'
+    fn_padding = f'{pwinter}/enhancer_center.padding.tmp'
+    fn_split_bin_bed = f'{pwinter}/enhancer_center.split_regions.bed'
 
     n_valid_sites = 0
     n_bad_line = 0 # the line which 2nd column is not numeric
     min_dist_before = distance + bin_size/2
-    nfactor = {}  # key = fn_lb, v = total lines in the bed file, the line_count should be calculated during the pre-counting step
+    nfactor = {}  # only used when signal_type= "o",  key = fn_lb, v = total lines in the bed file, the line_count should be calculated during the pre-counting step
     res = {}
     half_bin_size = int(bin_size / 2)
     
-    fn_bed = fls_ctrl[0][1]
-    fn_chr_map = fn_bed.replace('.sorted.bed', '.chr_map.pkl')
-    with open(fn_chr_map, 'rb') as f:
-        chr_map = pickle.load(f)
 
     with open(fn_enhancer_center) as f, open(fn_padding, 'w') as o:
+        f.readline()  # skip header
+        err = None
         for i in f:
             try:
                 line = i[:-1].split('\t')
@@ -793,13 +802,16 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
                 if pos > min_dist_before:
                     n_valid_sites += 1
                     chr_ = chr_map.get(line[0], line[0])
-                    left_boundary = pos_int - region_size - half_bin_size
-                    right_boundary = pos_int + region_size + half_bin_size
+                    left_boundary = pos - distance - half_bin_size
+                    right_boundary = pos + distance + half_bin_size
                     print(f'{chr_}\t{left_boundary}\t{right_boundary}', file=o)
             except:
+                if err is None:
+                    err = traceback.format_exc()
                 n_bad_line += 1
     if n_bad_line:
         logger.warning(f'{n_bad_line} lines in {fn_enhancer_center} are invalid, 2nd column is not numeric')
+        logger.debug(f'the error info is {err}')
 
     # get the line count for each bed file
     for fn_lb, fn_bed in fls_ctrl + fls_case:
@@ -807,7 +819,7 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
         if os.path.exists(fn_line_count):
             with open(fn_line_count) as f:
                 nfactor[fn_lb] = int(f.readline())
-        else:
+        elif signal_type == 'o':
             line_count = get_line_count(fn)
             nfactor[fn_lb] = line_count
             with open(fn_line_count, 'w') as o:
@@ -821,26 +833,28 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
         fno = f'{pwout}/intermediate/{fn_lb}.split_regions.bed'
         with open(fn_tss_padding) as f, open(fno, 'w') as o:
             for i in f:
-                chr_, s, e, strand = i[:-1].split('\t')
+                chr_, s, e = i[:-1].split('\t')
                 bin_sn = 0
                 chr_orig = chr_map.get(chr_, chr_)
+                s, e = int(s), int(e)
                 for pos in range(s, e, bin_size):
                     bin_sn += 1
-                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{bin_sn}\t{strand}', file=o)
+                    print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{bin_sn}', file=o)
+        # sort it
+        os.system(f'bedtools sort -i {fno} > {fno}.tmp && mv {fno}.tmp {fno}')
         return fno
     
     # build the new tss for the first file, and use it  for the rest
-    fn_lb = fls_ctrl[0][0]
-    fn_chr_map = f'{pw_bed}/{fn_lb}.chr_map.pkl'
-    with open(fn_chr_map, 'rb') as f:
-        chr_map = pickle.load(f)
     fn_split_bin_bed = makewindows(fn_lb, fn_padding, bin_size, chr_map)
-    
 
     # get the signal results
     for fn_lb, fn_bed in fls_ctrl + fls_case:
         fn_coverage = f'{pwinter}/{fn_lb}.signal.coverage.txt'
-        res[fn_lb] = calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage)
+        isignal = calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage)
+        if isignal == 1:
+            logger.error(f'Fail to process signal for {fn_lb} around the enhancer centers')
+            return 1
+        res[fn_lb] = isignal
     
     # save nfactor for type = 'o'
     if signal_type == 'o':
@@ -851,8 +865,10 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
 
     # export the signal results
     fn_pro_signal = f'{pwinter}/PROseq_signal.txt'
+    sam_list = [fn_lb for fn_lb, _ in fls_ctrl + fls_case]
+    
     with open(fn_pro_signal, 'w') as o:
-        print('position\t' + '\t'.join([fn_lb for fn_lb, _ in fls_ctrl + fls_case]), file=o)
+        print('position\t' + '\t'.join(sam_list), file=o)
         bin_sn = 0
         for bin_pos in range(-distance, distance + 1, bin_size):
             bin_sn += 1
@@ -861,6 +877,59 @@ def draw_signal(pwprj, fn_enhancer_center, fls_ctrl,fls_case, distance=2000, bin
                 row.append(f'{res[fn_lb][bin_sn]/n_valid_sites:.4f}')
             print('\t'.join(row), file=o)
     
+
+
+    logger.debug('plot signal')
+    fn_signal_pdf = f'{pwout}/eRNA/signal_around_ehancer-center.pdf'
+
+    fn_nf = f'{pwout}/intermediate/' + (f'nf.txt' if signal_type == 'p' else 'nf_o.txt')
+    def process_nf_line(line):
+        lb, v = line.strip().split('\t')
+        return lb, float(v)
+    with open(fn_nf) as f:
+        f.readline() # skip header
+        nf = dict([process_nf_line(i) for i in f if i.strip()])
+    nf_array = np.array([nf[fn_lb] for fn_lb in sam_list])
+    
+    
+    data = pd.read_csv(fn_pro_signal, sep='\t')
+    # get the normalized count
+    data[sam_list] = data[sam_list] * nf_array
+
+    n_ctrl, n_case = len(fls_ctrl), len(fls_case)
+
+    color_map = {
+        'ctrl': LinearSegmentedColormap.from_list("blue_darkblue", ["blue", "darkblue"], N=n_ctrl),
+        'case': LinearSegmentedColormap.from_list("red_darkred", ["red", "darkred"], N=n_case)
+    }
+    
+    plt.figure(figsize=(6, 6))
+    linestyle_pool = ['-', ':', '--', '-.']
+    len_line_styles = len(linestyle_pool)
+    for condition, fls in zip(['ctrl', 'case'], [fls_ctrl, fls_case]):
+        colors = color_map[condition]
+        sam_idx = 0
+        n_sam_condition = len(fls)
+        for fn_lb, _ in fls:
+            normalized_index = sam_idx / (n_sam_condition - 1)
+            linestyle = linestyle_pool[sam_idx % len_line_styles]
+            plt.plot(data['position'], data[fn_lb], color=colors(normalized_index), linestyle=linestyle, label=fn_lb, linewidth=0.9)
+            sam_idx += 1
+            
+    # Adding legend
+    plt.legend(sam_list, loc='upper right', fontsize=9, bbox_to_anchor=(1, 1), borderaxespad=0.)
+
+    # Labels and plot configuration
+    plt.xlabel('Distance to enhancer center', fontsize=15)
+    plt.ylabel('Fragment per bp per peak', fontsize=15)
+    plt.ylim(0, data.iloc[:, 1:].max().max() * 1.2)
+    plt.xticks(fontsize=8)
+    plt.yticks(fontsize=8)
+
+    # Save plot as PDF
+    plt.savefig(fn_signal_pdf, format='pdf', bbox_inches='tight')
+    plt.close()
+
 
     # plot the signal
     # signal = 1 if signal_type == 'o' else 0
@@ -1927,18 +1996,22 @@ def check_dependency():
     return err
 
 
-def run_shell(cmd, echo=False):
+def run_shell(cmd, echo=False, ret_info=False):
     """
     run shell command and check the return code and stdout stderr
     """
     p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
     stdout, stderr = p.communicate()
     retcode = p.returncode
+    if ret_info:
+        echo = False
     if retcode and echo:
         logger.error(f"Error running command: {cmd}")
         logger.error(f"stdout: {stdout.decode()}")
         logger.error(f"stderr: {stderr.decode()}")
-    return retcode
+    if not ret_info:
+        return retcode
+    return retcode, stdout, stderr
 
 def get_lb(fn):
     lb = fn.rsplit('/', 1)[-1].rsplit('.', 1)[0]

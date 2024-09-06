@@ -45,10 +45,11 @@ def getarg():
     ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
     ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
     ps.add_argument('-demo', help="""skip HOMER makeTagDirectory if already done""", action='store_true')
+    ps.add_argument('-v', help="""verbose mode, show debug level logging info""", action='store_true')
     args = ps.parse_args()
     return args
 
-def getlogger(fn_log=None, logger_name=None, nocolor=False):
+def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
     import logging
     logger_name = logger_name or "main"
     
@@ -112,7 +113,7 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
     if 'console' not in handler_names:
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(CustomFormatter(nocolor=nocolor))
-        console.setLevel('INFO')
+        console.setLevel('DEBUG' if verbose else 'INFO')
         console.name = 'console'
         logger.addHandler(console)
 
@@ -126,13 +127,20 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
 
 args = getarg()
 pwouttmp = args.pwout
-logger = getlogger(f'{pwouttmp}/eRNA.run.log', 'NRSA')
+fn_log = f'{pwouttmp}/eRNA.run.log'
+logger = getlogger(fn_log, 'NRSA', verbose=args.v)
+
+fn_log_base = os.path.basename(fn_log)
+if os.path.exists(fn_log_base):
+    os.unlink(fn_log_base)
+os.symlink(fn_log, fn_log_base)
+
 
 logger.debug(f'working in {os.getcwd()}')
 logger.debug(f'inpu args = {vars(args)}')
 
 def main():
-    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer
+    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal
     from types import SimpleNamespace
     
     
@@ -240,11 +248,20 @@ def main():
     logger.debug('gtf info loaded')
     fn_enhancer_raw = f'{pwout}/eRNA/Enhancer.raw.txt'
     fn_enhancer = f'{pwout}/eRNA/Enhancer.txt'
-
+    fn_enhancer_center = f'{pwout}/eRNA/Enhancer_center.txt'
+    fn_pkl_other_region = f'{pwout}/intermediate/eRNA.other_region.pkl'
+    fn_other_region = f'{pwout}/intermediate/eRNA.other_region.txt'
+    fn_active_genes = f'{pwout}/intermediate/active_gene.txt'
+    fn_active_tss = f'{pwout}/intermediate/active_tss.txt'
+    fn_fantom, fn_association = [ref_fls[_] for _ in ['fantom', 'association']]
+    fno_longerna = f'{pwout}/eRNA/long_eRNA.txt'
+    fno_closest = f'{pwout}/intermediate/closest.txt'
+    fn_4d = ref_fls['4d']
+    fn_enhancer_short = f'{pwout}/intermediate/Enhancer_temp.bed'
+    fn_count_enhancer = f'{pwout}/intermediate/count_enhancer.txt'
 
     # logger.info('modify here, uncomment')
     
-    fn_pkl_other_region = f'{pwout}/intermediate/eRNA.other_region.pkl'
     if demo and os.path.exists(fn_pkl_other_region):
         logger.debug(f'loading previous gtf_compare results: {fn_pkl_other_region}')
         with open(fn_pkl_other_region, 'rb') as f:
@@ -259,7 +276,6 @@ def main():
     
     # other regions, [chr, s, e, strand], s and e are int
     # this list is exactly the same as perl code
-    fn_other_region = f'{pwout}/intermediate/eRNA.other_region.txt'
     if not os.path.exists(fn_other_region):
         other_region = sorted(other_region, key=lambda x: (x[0], x[1]))
         tmp = ['\t'.join(map(str, i)) for i in other_region]
@@ -270,8 +286,6 @@ def main():
     # load active genes
     # 2 columns, col2 = ts, col2 = gn
     logger.debug('loading active TSS')
-    fn_active_genes = f'{pwout}/intermediate/active_gene.txt'
-    fn_active_tss = f'{pwout}/intermediate/active_tss.txt'
     ts_to_gn = {}
     active_genes = set()
     with open(fn_active_genes) as f:
@@ -302,8 +316,6 @@ def main():
         return 1
     
     # find the enhancer region
-    fn_fantom, fn_association = [ref_fls[_] for _ in ['fantom', 'association']]
-    fno_longerna = f'{pwout}/eRNA/long_eRNA.txt'
 
 
     if not (demo and os.path.exists(fn_enhancer)):
@@ -332,7 +344,6 @@ def main():
 
         # find closest gene for enhancer
         logger.info(f'Finding closest TSS for enhancer')
-        fno_closest = f'{pwout}/intermediate/closest.txt'
         cmd = f'bedtools closest -a {fn_enhancer_raw} -b {fn_active_tss} -d > {fno_closest}'
         status = run_shell(cmd, echo=True)
         if status:
@@ -366,7 +377,6 @@ def main():
                         center_enhancer[k_center] = enhancer_info
         logger.debug(f'enhancer_closest gene, n = {len(res_closest)}, center_count = {len(center_enhancer)}')
 
-        fn_4d = ref_fls['4d']
         d_4d = {}
         if fn_4d is not None:
             # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
@@ -431,9 +441,8 @@ def main():
                 
         # save center_str
         # center_str[k_center] = f'{chr_}\t{icenter}\t{ifantom}'
-        fn_center = f'{pwout}/eRNA/Enhancer_center.txt'
         center_out = []
-        with open(fn_center, 'w') as o:
+        with open(fn_enhancer_center, 'w') as o:
             print('\t'.join(["chr","position","FONTOM5","Enhancer_ID"]), file=o)
             for k_center, v in center_str.items():
                 enhancer_info = center_enhancer[k_center]
@@ -449,7 +458,6 @@ def main():
         
         
     # enhancer region short
-    fn_enhancer_short = f'{pwout}/intermediate/Enhancer_temp.bed'
     k_enhancer_map = {}
     
     # the chrom patter is different for this file and the raw bed file,
@@ -530,7 +538,6 @@ def main():
                 enhancer_count[k_enhancer][sam_idx] = ict
     
     # dump the count
-    fn_count_enhancer = f'{pwout}/intermediate/count_enhancer.txt'
     with open(fn_count_enhancer, 'w') as o:
         print(f'Enhancer_ID\tchr\tstart\tend\t' + '\t'.join([_[0] for _ in fls_in]), file=o)
         for k_enhancer, v in enhancer_count.items():
@@ -544,6 +551,11 @@ def main():
     sam_case = [_[0] for _ in in2]
     change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctrl, sam_case, flag=1)
     
+    # draw signal
+    logger.info('Drawing signal around enhancer center...')
+    signal_type = 'p'
+    draw_signal(pwout, fn_enhancer_center, in1, in2, chr_map_to_raw_bed, signal_type=signal_type)
+    
     # pause longeRNA
     
     # if lerna_out:
@@ -553,15 +565,7 @@ def main():
     #     fn_gtf = 
     
     
-    # signal.pl
-    
-        # my $cmd_file3 = $bin_dir . "\/signal.pl";
-        # my $tname     = "signal_around_ehancer-center";
-        # print "Generating figures......\n";
-        # my $cmd_plot =
-        # "perl $cmd_file3 -w $out_dir -i $out2 -in1 $cond1_str -in2 $cond2_str -n $tname";
-        # system($cmd_plot);
-    
+
     
     # # Define other required variables
     # weight = 0.5  # Example value, update accordingly

@@ -6,6 +6,7 @@ import re
 import traceback
 import pickle
 import logging
+from types import SimpleNamespace
 
 # global var
 bin_dir = os.path.dirname(os.path.realpath(__file__))
@@ -46,7 +47,7 @@ def getarg():
     ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
     ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
     ps.add_argument('-demo', help="""skip HOMER makeTagDirectory if already done""", action='store_true')
-    ps.add_argument('-v', help="""verbose mode, show debug level logging info""", action='store_true')
+    ps.add_argument('-verbose', '-v', help="""verbose mode, show debug level logging info""", action='store_true')
     args = ps.parse_args()
     return args
 
@@ -156,6 +157,7 @@ def main(args):
 
     args_d = vars(args)
     demo = args.demo
+    organism = args.organism
     # in1, in2, pwout, organism, overlap_frac, cutoff, le, filter(0,1), 
     # dtss, dtts, 
     # wd (distance within active gene), 
@@ -219,7 +221,7 @@ def main(args):
             logger.error("Error encountered while running findPeaks")
             return status
     else:
-        logger.info(f'Skip HOMER scripts due to demo mode')
+        logger.warning(f'demo mode, Skip HOMER commands.')
 
     # cnofigs
     # overlap_frac, cutoff, le, filter(0,1), 
@@ -292,7 +294,6 @@ def main(args):
 
     # load active genes
     # 2 columns, col2 = ts, col2 = gn
-    logger.debug('loading active TSS')
     ts_to_gn = {}
     active_genes = set()
     with open(fn_active_genes) as f:
@@ -302,6 +303,7 @@ def main(args):
             ts_to_gn[ts] = gn
 
     active_tss = {}
+    logger.debug(f'getting active tss from {fn_tss}')
     with open(fn_tss) as f, open(fn_active_tss, 'w') as o:
         # chr1	11874	11874	NR_046018.2	+
         for i in f:
@@ -328,6 +330,7 @@ def main(args):
     if not (demo and os.path.exists(fn_enhancer)):
         logger.info(f'Finding enhancer region')
         enh_out, lerna_out = get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=lcut, thres_long_eRNA=thres_long_eRNA, distance_for_merge=thres_merge, filter=filter_tss)
+        logger.debug(f'enh_out = {len(enh_out)}, lerna count = {len(lerna_out)}')
         
         # enh_out = [chr, start, end, center_list, fantom_list, asso_list]
         if enh_out:
@@ -352,6 +355,7 @@ def main(args):
         # find closest gene for enhancer
         logger.info(f'Finding closest TSS for enhancer')
         cmd = f'bedtools closest -a {fn_enhancer_raw} -b {fn_active_tss} -d > {fno_closest}'
+        logger.debug(cmd)
         status = run_shell(cmd, echo=True)
         if status:
             logger.error(f'fail to run bedtools closest')
@@ -461,6 +465,7 @@ def main(args):
         # logger.info(f'uncomment above')
     else:
         logger.warning(f'debug mode, skip get enhancer steps')
+        lerna_out = 1 if os.path.exists(fno_longerna) else 0
 
         
         
@@ -500,8 +505,8 @@ def main(args):
     status = sort_bed_like_file(fn_enhancer_short)
     if status:
         return 1
-    # logger.info(fn_enhancer_short)
 
+    # logger.warning(f'enhancer count = {len(k_enhancer_map)}')
 
     logger.info('Detecting Enhancer change...')
     n_ctrl, n_case = len(in1), len(in2)
@@ -523,16 +528,18 @@ def main(args):
     for fn_lb, fn_bed in fls_in:
         sam_idx += 1
         fn_coverage_res = f'{pwout}/intermediate/enhancer_cov.{fn_lb}.bed'
+        cmd = f'bedtools coverage -a {fn_enhancer_short} -b {fn_bed} -counts -sorted > {fn_coverage_res}'
         if demo and os.path.exists(fn_coverage_res):
             logger.debug(f'skip bedtools coverage due to demo mode')
         else:
-            cmd = f'bedtools coverage -a {fn_enhancer_short} -b {fn_bed} -counts -sorted > {fn_coverage_res}'
             logger.debug(cmd)
             retcode = run_shell(cmd, echo=True)
             if retcode:
                 return 1
-            
         # process
+        if os.path.getsize(fn_coverage_res) < 10:
+            logger.warning(f'Empty bedtools coverage file, cmd = \n{cmd}')
+            continue
         with open(fn_coverage_res) as f:
             for i in f:
                 try:
@@ -543,7 +550,11 @@ def main(args):
                 if k_enhancer not in enhancer_count:
                     enhancer_count[k_enhancer] = ['0' for _ in range(n_sam)]
                 enhancer_count[k_enhancer][sam_idx] = ict
-    
+
+    if len(enhancer_count) == 0:
+        logger.error(f'no Enhancer count found')
+        return 1
+    # logger.warning(len(enhancer_count))
     # dump the count
     with open(fn_count_enhancer, 'w') as o:
         print(f'Enhancer_ID\tchr\tstart\tend\t' + '\t'.join([_[0] for _ in fls_in]), file=o)
@@ -565,12 +576,23 @@ def main(args):
     
     # pause longeRNA
     
-    # if lerna_out:
-    #     logger.info(f'Detecting long eRNA change...')
-    #     # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
-    #     from pause_longeRNA import main
-    #     fn_gtf = 
-    
+    if lerna_out:
+        logger.info(f'Detecting long eRNA change...')
+        # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
+        from pause_longeRNA import main
+        args = SimpleNamespace()
+        args.in1 = in1
+        args.in2 = in2
+        args.pwout = pwout
+        args.organism = organism
+        args.pw_bed = f'{pwout_raw}/bed'
+        args.pwout_raw = pwout_raw
+        args.gtf = fno_longerna
+        args.f1 = None
+        args.f2 = None  # the f1 and f2 are get from nf.txt
+        args.skip_get_mapped_reads = 1 if demo else 0
+        logger.info('running pause longeRNA')
+        main(args)
     
 
     
@@ -744,10 +766,11 @@ def main(args):
 
 if __name__ == "__main__":
     args = getarg()
-    pwouttmp = args.pwout
-    fn_log = f'{pwouttmp}/eRNA.run.log'
+    pwout = args.pwout
+    os.makedirs(pwout, exist_ok=True)
+    fn_log = f'{pwout}/eRNA.run.log'
     fn_log_base = os.path.basename(fn_log)
-    terminal_level = 'DEBUG' if args.v else None
+    terminal_level = 'DEBUG' if args.verbose else None
     logger = updatelogger(logger, fn_log, terminal_level=terminal_level)
 
     if os.path.exists(fn_log_base):

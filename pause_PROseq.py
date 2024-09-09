@@ -2,16 +2,6 @@
 """
 process PROseq data
 """
-import time
-s = time.time()
-import sys, os, re
-import logging
-import pickle
-import json
-from types import SimpleNamespace
-import traceback
-import gc
-
 def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
@@ -36,14 +26,27 @@ def getargs():
     ps.add_argument('-force', help="""ignore the previous pre-count result for the bed files""", action='store_true')
     # ps.add_argument('-overwrite', help="""if the mapped reads count file already exists, overwrite it, default is reuse the old ones""", action='store_true')
     ps.add_argument('-verbose', '-v', help="""verbose mode, print more information""", action='store_true')
+    ps.add_argument('-demo', help="""demo mode, skip running the get_mapped_reads step if already exist""", action='store_true')
     # ps.add_argument('-testfunc', help="""test the new functions,debug mode""", action='store_true')
     args = ps.parse_args()
     
     return args
 
+args = getargs()  # just to prevent loading below utils if just calling help
+
+import time
+s = time.time()
+import sys, os, re
+import logging
+import pickle
+import json
+from types import SimpleNamespace
+import traceback
+import gc
 
 from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf
 
+from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
 
 time_cost = {}
@@ -150,155 +153,6 @@ def updatelogger(logger, fn_log, terminal_level=None):
 
 logger = getlogger(logger_name='NRSA')
 
-class Analysis:
-    def __init__(self, args, is_long_eRNA=False):
-        
-        self.bin_size = 200 # the bin size for building the pre-count dict of each bed file. compared bin size of 10, 20, 50, 100 and 200 and 500.  200 is the best, maybe because when getting the gb count, the size fit the distribution
-        
-        # folders
-        self.bin_dir = os.path.dirname(os.path.realpath(__file__))
-        self.out_dir = args.pwout or os.getcwd()
-        self.pwout_raw = args.pwout_raw
-        self.inter_dir = os.path.join(self.out_dir, 'intermediate')
-        self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
-        self.longerna = is_long_eRNA # toggle if this is long eRNA
-        
-        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.out_dir, self.inter_dir, self.known_gene_dir]):
-            if not os.path.exists(d):
-                logger.debug(f'Making {lb} directory: {d}')
-                os.makedirs(d)
-
-        self.status = 0
-
-        self.organism = args.organism
-        if self.organism not in {'hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'}:
-            logger.error(f"Invalid organism provided: {self.organism}")
-            self.status = 1
-
-        # input files
-        in1 = process_input(self.pwout_raw, args.in1) # return = fn_lb, fn_bed
-        if in1 is None:
-            logger.error("Invalid input files provided for condition1")
-            self.status = 1
-        in2 = process_input(self.pwout_raw, args.in2)
-        self.control_bed = in1
-        self.case_bed = in2
-
-        # ref files
-        fa_in = args.fa
-        if fa_in and os.path.exists(fa_in):
-            if not fa_in.endswith('.fa'):
-                logger.error(f"Invalid fasta file provided, file extension should be .fa in plain text. input = {fa_in}")
-                self.status = 1
-        ref_fls = get_ref(self.organism, fa_in=fa_in, gtf=args.gtf)
-        if ref_fls is None:
-            logger.error("Error encountered while retrieving reference files")
-            self.status = 1
-            return
-        self.fa = ref_fls['fa']
-        self.gtf = ref_fls['gtf']
-        if not os.path.exists(self.gtf):
-            logger.error(f"GTF file not available: {self.gtf}")
-            self.status = 1
-        
-        # verfify the normalization factors
-        factors = [
-            [args.f1, self.control_bed, 'condition1'],
-            [args.f2, self.case_bed, 'condition2']
-        ]
-        
-        if self.case_bed:
-            if bool(args.f1) != bool(args.f2):
-                logger.error("Please provide normalization factors for both or none of the conditions")
-                self.status = 1
-        for factor, bed, lb in factors:
-            n_bed = len(bed) if bed else 0
-            if factor:
-                if len(factor) != n_bed:
-                    logger.error(f"Number of normalization factors provided for {lb} does not match the number of input files")
-                    self.status = 1
-                for n, f in enumerate(factor):
-                    if f == 0:
-                        logger.error(f"{lb} - factore {n + 1} / {len(factor)}: normalize factor could not be zero!")
-                        self.status = 1
-        
-        if self.status:
-            return
-        
-        self.ref = ref_fls
-        self.input_fls = self.control_bed + (self.case_bed or []) # fn_lb, fn_bed
-        
-        self.out_fls = {
-            'bed_peaks': {},
-            'fdr': {},
-            'count_pp_gb': os.path.join(self.inter_dir, 'count_pp_gb.txt')
-        }
-        
-        
-        if self.longerna:
-            self.n_gene_cols = 1
-            self.gene_cols = ['long-eRNA']
-            self.longerna_flag_str = '-long-eRNA'
-        else:
-            self.n_gene_cols = 2
-            self.gene_cols = ['Transcript', 'Gene']
-            self.longerna_flag_str = ''
-
-        self.skip_get_mapped_reads = 0
-        
-        # logger.warning('modify here')
-        # self.skip_get_mapped_reads = 1
-        
-        self.skip_count_pp_gb = 0
-
-        fn_lb_uniq = set()
-        fn_lb_dup = {}
-
-        for fn_lb, fn_bed in self.input_fls:
-            # tssCount, tssLength, tssRatio, tssSummit_pos, genebodyCount, genebodyLength, genebodyRatio, tss_vs_genebody_ratio
-            if fn_lb not in fn_lb_uniq:
-                fn_lb_uniq.add(fn_lb)
-            else:
-                fn_lb_dup.setdefault(fn_lb, []).append(fn_bed)
-                continue
-            header_bed_peaks = self.gene_cols + ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
-            fn_bed_peaks = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_raw.txt')
-            file_exist_flag = 0
-            # if os.path.exists(fn_bed_peaks) and not self.overwrite_intermediate:
-            #     # logger.warning(f"File already exists: {fn_bed_peaks}, wil reuse it")
-            #     file_exist_flag = 1
-            #     fh_bed_peaks = open(fn_bed_peaks, 'r')
-            # else:
-            if self.skip_get_mapped_reads:
-                fh_bed_peaks = open(fn_bed_peaks, 'r')
-            else:
-                fh_bed_peaks = open(fn_bed_peaks, 'w')
-                fh_bed_peaks.write('\t'.join(header_bed_peaks) + '\n')
-            self.out_fls['bed_peaks'][fn_lb] = {'fn': fn_bed_peaks, 'fh': fh_bed_peaks, 'header': header_bed_peaks, 'exist': file_exist_flag}
-            
-            header_fdr = header_bed_peaks + ['pvalue', 'FDR']
-            fn_fdr = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_FDR.txt')
-            self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'header': header_fdr}
-        
-        
-        if fn_lb_dup:
-            tmp = json.dumps(fn_lb_dup, indent=4)
-            logger.error(f'Duplicate file labels found in input file list, please make the file name unique:\n{tmp}')
-            sys.exit(1)
-        
-        # config
-        self.config = {
-            'mapped_sites_only': 0, # 1: only mapped sites are used to calculate the mappable sites, 0: all ATCG bases are used regardless of whether they are covered by reads. in the perl code, it is always set to 0
-            'pro_up': args.up, # define the upstream of TSS as promoter (bp, default: 500)
-            'pro_down': args.down, # define the downstream of TSS as promoter (bp, default: 500)
-            'gb_start': args.gb, # define the start of gene body density calculation (bp, default: 1000)
-            'min_gene_len': args.min_gene_len, # define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored
-            'window_size': args.window, # define the window size (bp, default: 50)
-            'step': args.step, # define the step size (bp, default: 5)
-            'normalize_factor1': args.f1, # normalization factors for samples of condition1
-            'normalize_factor2': args.f2, # normalization factors for samples of condition2
-        }
-        
 
 def bench(s, lb):
     time_cost.setdefault(lb, 0)
@@ -306,119 +160,6 @@ def bench(s, lb):
     time_cost[lb] += now - s
     return now
 
-
-def test_get_peak(gene_info, fn_lb, fn_bed, pwout, bin_size):
-    count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pwout, bin_size)
-    chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
-    gbc, gbd, pp_res = get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq,  50, 5, bin_size, {})
-    
-    logger.debug(f'gbc = {gbc}, gbd={gbd}')
-    tmp = json.dumps(pp_res, indent=3)
-    logger.debug(tmp)
-
-
-def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=False):
-    
-    invalid_chr_transcript = 0
-    bin_size = analysis.bin_size
-    # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
-    fail_to_retrieve_seq = 0
-    pwout = analysis.out_dir
-    window_size, step_size = analysis.config['window_size'], analysis.config['step']
-    pw_bed = args.pw_bed
-    dummy_seq = 'ATCG'
-    n = 0
-    prev = [time.time(), 0] # time, get_mapped_reads_count count
-    section_size = 1000 # print log every 1000 loops
-
-    # add more values to gtf_info
-    logger.debug(f'adding more values to gtf_info')
-    s_before_loop = time.time()
-    s = s_before_loop
-    ts_list = list(gtf_info)
-
-    pp_str = {ts: [] for ts in ts_list}
-    gb_str = {ts: [] for ts in ts_list}
-    
-    # seq_pool = {} # key = transcript_id
-    # count_pool = {}
-    # prev_peak_pool = {}
-    # genes_with_N = set()
-    n_ts_init = len(ts_list)
-    for fn_lb, fn_bed in fls:
-        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pw_bed, bin_size, reuse=reuse_pre_count)
-        prev_peak = {}
-        
-        # exclude the ts that the chr not in the bed files
-        valid_chr = set(count_per_base)
-        chr_excluded = {}
-        ts_excluded = set()
-        
-        for ts, v in gtf_info.items():
-            ts_chr = v['chr']
-            if ts_chr not in valid_chr:
-                ts_excluded.add(ts)
-                if ts in pp_str:
-                    pp_str[ts].append('NA')
-                if ts in gb_str:
-                    gb_str[ts].append('NA')
-                chr_excluded.setdefault(ts_chr, 0)
-                chr_excluded[ts_chr] += 1
-        if len(ts_excluded) > 0:
-            logger.info(f'{len(ts_excluded)} transcripts in GTF file excluded due to chromosome not exist in bed file')
-            logger.debug(f'excluded chr = {chr_excluded}')
-        fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
-        for transcript_id in ts_list:
-            if transcript_id in ts_excluded:
-                continue
-            gene_info = gtf_info[transcript_id]
-            chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
-
-            n += 1
-            if n % section_size == 0:
-                now = time.time()
-                prev_time, prev_count = prev
-                time_gap = now - prev_time
-                speed = time_gap * 1000  / (n - prev_count)
-                logger.debug(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
-                prev = [now, n]
-
-            # pp_res: {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
-            s = time.time()
-            gbc, gbd, pp_res = get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq,  window_size, step_size, bin_size, prev_peak)
-            s = bench(s, 'get_peak')
-
-            pp_str[transcript_id].append(str(pp_res['ppc']))
-            gb_str[transcript_id] += [str(gbc), str(gbd)]
-            
-            s = bench(s, 'save pp_str')
-            # write to file
-            # row = ['Transcript', 'Gene', 'tssCount', 'tssLength', 'tssRatio', 'tssSummit_pos', 'genebodyCount', 'genebodyLength', 'genebodyRatio', 'tss_vs_genebody_ratio']
-            row = [transcript_id]
-            if not analysis.longerna:
-                row.append(gene_info['gene_name'])
-            row += [pp_res['ppc'], pp_res['mappable_sites'], pp_res['ppd'], pp_res['summit_pos'], gbc, gb_len_mappable, gbd]
-            pro_vs_pb = round(pp_res['ppd'] / gbd, 4) if gbd else 'NA'
-            row.append(pro_vs_pb)
-            s = bench(s, 'prepare row')
-            
-            print('\t'.join(map(str, row)), file=fh_bed_peaks)
-            s = bench(s, 'write to file')
-        # # release memory
-        del count_per_base
-        del count_bin 
-        gc.collect()
-        
-    if fail_to_retrieve_seq:
-        logger.warning(f'failed to retrieve sequence for {fail_to_retrieve_seq} genes')
-
-    if invalid_chr_transcript:
-        logger.warning(f"Number of genes with invalid chromosome = {invalid_chr_transcript}")
-
-    # tmp = json.dumps(time_cost, indent=3)
-    # logger.info(tmp)
-
-    return pp_str, gb_str
 
 def collect_previous_count(analysis, fls):
     """
@@ -488,15 +229,14 @@ def main(args):
     if dependency_status:
         logger.error("Dependency check failed")
         sys.exit(1)
+    demo = vars(args).get('demo', False)
 
-    analysis = Analysis(args)
+    analysis = Analysis(args, skip_get_mapped_reads=demo)
     if analysis.status:
         logger.error("Exit now")
         sys.exit(1)
     
     logger.debug(vars(args))
-
-    logger.debug(f'skip_count_pp_gb = {analysis.skip_count_pp_gb}, skip_get_mapped_reads = {analysis.skip_get_mapped_reads}')
 
     rep1 = len(analysis.control_bed)
     rep2 = len(analysis.case_bed) if analysis.case_bed else 0
@@ -511,24 +251,6 @@ def main(args):
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
     gtf_info, fn_tss, fn_tss_tts, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
-
-    # logger.warning(f'ts lenth = {len(gtf_info)}')
-    # sys.exit(1)
-    # if args.testfunc:
-    #     logger.warning('Debugging mode')
-    #     transcript_id1 = 'NM_000051.3'
-    #     transcript_id2 = 'NM_000051'
-    #     gene_info = gtf_info.get(transcript_id1) or gtf_info[transcript_id2]
-    #     gene_info = add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance) 
-    #     logger.debug(gene_info)
-    #     fn_lb, fn_bed = analysis.input_fls[0]
-        
-    #     logger.debug(fn_lb)
-    #     test_get_peak(gene_info, fn_lb, fn_bed, analysis.out_dir, bin_size=200)
-    #     logger.debug('done')
-    #     sys.exit(0)
-
-
 
     err_total = sum(err.values())
     if err_total:
@@ -584,14 +306,6 @@ def main(args):
     total_skipped = sum(skipped_ts.values())
     len1 = len(gtf_info_new)
     logger.debug(f'initial gtf dict = {len(gtf_info)}, total skipped = {total_skipped}, detail = {skipped_ts} merged transcript = {merged_transcripts}, total count before merge = {len1 + merged_transcripts}, current ts count = {len1}')
-    # logger.warning('modify here')
-    # logger.debug(ts_prefix)
-    # sys.exit(1)
-    # if short_genes:
-    #     logger.warning(f"Number of genes with length less than the minimum gene length ({min_gene_len}): n= {short_genes}, current total genes: {len(gtf_info_new)}")
-    # else:
-    #     logger.info(f"Total number of genes after filtering: {len(gtf_info_new)}")
-    
     
     gtf_info = gtf_info_new
     fls = analysis.input_fls # element is [fn_lb, fn_bed]
@@ -600,8 +314,8 @@ def main(args):
     
     reuse_pre_count = not vars(args).get('ignore', False)
 
-    
-    if not analysis.skip_get_mapped_reads:
+    fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    if not (os.path.exists(fn_count_pp_gb) and demo):
         logger.info(f'Getting pp_gb count')
         pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
 
@@ -616,8 +330,10 @@ def main(args):
             fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
             fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
             pause_index_str = get_FDR_per_sample(fn_lb, fn_peak, fn_fdr,  pause_index_str)
-
     else:
+        logger.debug('Re-use previous mapped reads count')
+        pp_str, gb_str = collect_previous_count(analysis, fls)
+    
         logger.debug('collecting pause index from FDR files')
         pause_index_str = {}  # key = transcript_id
         for fn_lb, _ in fls:
@@ -632,7 +348,8 @@ def main(args):
                     line = i[:-1].split('\t')
                     transcript_id, pindex, pval, fdr = [line[_] for _ in [0, idx_pindex, idx_pval, idx_fdr]]
                     pause_index_str.setdefault(transcript_id, {})[fn_lb] = [pindex, pval, fdr]
-    
+        
+
     pause_index_str_new = {}
     for transcript_id, v1 in pause_index_str.items():
         v2 = []
@@ -646,42 +363,27 @@ def main(args):
     
  
     # count_pp_gb
-    fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    logger.info('Building count_pp_gb')
+    prefix = 'longeRNA-' if analysis.longerna else ''
+    header = analysis.gene_cols + ['chr', 'start', 'end', 'strand']
+    header_pp = []
+    header_gb = []
+    for fn_lb, fn_bed in fls:
+        header_gb += [f'gbc_{fn_lb}', f'gbd_{fn_lb}']
+        header_pp.append(f'ppc_{fn_lb}')
+    header += header_pp + header_gb
     
-    # analysis.skip_count_pp_gb = 0
-    if not analysis.skip_count_pp_gb:
-        if analysis.skip_get_mapped_reads:
-            logger.debug('Re-use previous mapped reads count')
-            pp_str, gb_str = collect_previous_count(analysis, fls)
-        
-        logger.info('Building count_pp_gb')
-        prefix = 'longeRNA-' if analysis.longerna else ''
-        header = analysis.gene_cols + ['chr', 'start', 'end', 'strand']
-        header_pp = []
-        header_gb = []
-        for fn_lb, fn_bed in fls:
-            header_gb += [f'gbc_{fn_lb}', f'gbd_{fn_lb}']
-            header_pp.append(f'ppc_{fn_lb}')
-        header += header_pp + header_gb
-        
-        with open(fn_count_pp_gb, 'w') as o:
-            print('\t'.join(header), file=o)
-            for transcript_id in pp_str:
-                gene_info = gtf_info[transcript_id]
-                # row = []
-                row = [transcript_id]
-                if not analysis.longerna:
-                    row.append(gene_info['gene_name'])
-                row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
-                row += pp_str[transcript_id] + gb_str[transcript_id]
-                print('\t'.join(row), file=o)
-                
-                # if ';' not in transcript_id:
-                #     row.insert(0, transcript_id)
-                #     print('\t'.join(row), file=o)
-                # else:
-                #     for its in transcript_id.split(';'):
-                #         print(f'{its}\t' + '\t'.join(row), file=o)
+    with open(fn_count_pp_gb, 'w') as o:
+        print('\t'.join(header), file=o)
+        for transcript_id in pp_str:
+            gene_info = gtf_info[transcript_id]
+            # row = []
+            row = [transcript_id]
+            if not analysis.longerna:
+                row.append(gene_info['gene_name'])
+            row +=  [gene_info['chr'], str(gene_info['start']), str(gene_info['end']), gene_info['strand']]
+            row += pp_str[transcript_id] + gb_str[transcript_id]
+            print('\t'.join(row), file=o)
 
     del pp_str
     del gb_str
@@ -695,11 +397,7 @@ def main(args):
 
     # modify here
     logger.info('Change_pp_gb')
-        
     change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
-    
-    # dump pindex.txt
-    # pause_index[fn_lb][transcript_id] = [pro_vs_pb, pvalue, fdr]
     
     logger.debug('Dump pindex.txt')
     header_extra = []
@@ -735,7 +433,7 @@ def main(args):
         logger.info(f'plotting heatmap for pp_change')
         # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
 
-        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap')
+        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
 
         # modify here
         # logger.info('debug exit')
@@ -759,9 +457,10 @@ def get_new_args(args, update_dict):
     
 if __name__ == "__main__":
     args = getargs()
-    
-    pwouttmp = args.pwout
-    fn_log = f'{pwouttmp}/NRSA.run.log'
+    pwout = args.pwout
+    os.makedirs(pwout, exist_ok=True)
+
+    fn_log = f'{pwout}/NRSA.run.log'
     fn_log_base = os.path.basename(fn_log)
     terminal_level = 'DEBUG' if args.verbose else None
     logger = updatelogger(logger, fn_log, terminal_level=terminal_level)

@@ -15,10 +15,13 @@ import numpy as np
 import fisher
 import traceback
 import bisect 
+import gc
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
 pw_code = os.path.dirname(os.path.realpath(__file__))
 inf_neg = float('-inf')
+bases_set = set('ATGCatgc')
+
 
 class HiddenPrints:
     def __enter__(self):
@@ -120,7 +123,6 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
     return logger
 logger = getlogger(logger_name='NRSA')
 
-bases_set = set('ATGCatgc')
 def refine_chr(chr_):
     chr_ = chr_.strip().lower()
     for _ in ['chromosome', 'chrom', 'chr']:
@@ -305,8 +307,6 @@ def get_ref(organism, fa_in=None, gtf=None):
         'fa': f'{pw_code}/fa/{organism}/{organism}.fa',
 
         'gtf': f'{pw_ref}/{organism}/RefSeq-{organism}.gtf', # use the new gtf file
-        'tss': f'{pw_ref}/{organism}/RefSeq-{organism}-tss.txt',
-        'tss_tts': f'{pw_ref}/{organism}/RefSeq-{organism}-tss-tts.txt',
         # 'tss_filter': f'{pw_ref}/{organism}/UCSC-{organism}-filter-tss.txt',
     }
     
@@ -413,97 +413,6 @@ def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp
     # gbc = gbd = 0
     # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
     return gbc, gbd,  pp_res
-
-
-def get_mapped_reads(count_file_fh, count_file_idx, chr_, strand, start, end):
-    """
-    get the coverage of the region, the coverage is the number of **read ends** at each position in this region
-    each call will cost around 100us.
-    """
-    bin_size = count_file_idx['bin_size']
-    start, end = sorted([start, end])
-    chunk_s = start // bin_size
-    chunk_e = end // bin_size
-    strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
-    idx_bed_chr = count_file_idx[chr_]
-    fh_byte_start = None
-    
-    if chunk_e > chunk_s:
-        all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
-        for ichunk in all_possible_chunks:
-            if ichunk in idx_bed_chr:
-                byte_pos_tmp = idx_bed_chr[ichunk]
-                if fh_byte_start is None or byte_pos_tmp < fh_byte_start:
-                    fh_byte_start = byte_pos_tmp
-    else:
-        if chunk_s in idx_bed_chr:
-            fh_byte_start = idx_bed_chr[chunk_s]
-    if fh_byte_start is None:
-        # no reads in this region
-        return 0
-
-    count_file_fh.seek(fh_byte_start)
-    n_parsed = 0
-    for i in count_file_fh:
-        # 1	13033	0	2
-        line = i[:-1].split('\t')
-        chr_line, pos, ict = line[0], line[1], line[strand_idx]
-        pos = int(pos)
-        ict = int(ict)
-        if start <= pos <= end:
-            n_parsed += ict
-            continue
-        if  pos > end or chr_line != chr_:
-            # there will be no more lines matching the region
-            break
-    return n_parsed
-
-def get_summit(count_file_fh, count_file_idx, chr_, strand, start, end):
-    """
-    get the positionn with the hightest count in the region
-    """
-    bin_size = count_file_idx['bin_size']
-    start, end = sorted([start, end])
-    chunk_s = start // bin_size
-    chunk_e = end // bin_size
-    strand_idx = 2 if strand == '+' else 3 # plus strand is 3rd column, minus strand is 4th column
-    idx_bed_chr = count_file_idx[chr_]
-
-    all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
-    fh_byte_start = None
-
-    if chunk_e > chunk_s:
-        all_possible_chunks = sorted(range(chunk_s, chunk_e + 1))
-        for ichunk in all_possible_chunks:
-            if ichunk in idx_bed_chr:
-                byte_pos_tmp = idx_bed_chr[ichunk]
-                if fh_byte_start is None or byte_pos_tmp < fh_byte_start:
-                    fh_byte_start = byte_pos_tmp
-    else:
-        if chunk_s in idx_bed_chr:
-            fh_byte_start = idx_bed_chr[chunk_s]
-    if fh_byte_start is None:
-        # no reads in this region
-        return 0
-
-    count_file_fh.seek(fh_byte_start)
-    
-    summit = [0, 0]
-    for i in count_file_fh:
-        # 1	13033	0	2
-        line = i[:-1].split('\t')
-        chr_line, pos, ict = line[0], line[1], line[strand_idx]
-        pos = int(pos)
-        ict = int(ict)
-        if start <= pos <= end:
-            if summit[0] < ict:
-                summit = [ict, pos]
-            continue
-
-        if  pos > end or chr_line != chr_:
-            # there will be no more lines matching the region
-            break
-    return summit[1]
 
 
 def draw_box_plot(n_gene_cols, pwout, out_name, n_rep1, n_rep2=None, gn_list=None):
@@ -940,7 +849,7 @@ def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance
     # signal = 1 if signal_type == 'o' else 0
     # file=fn_pro_signal  outdir=\"$inter_dir\" sample=\"$samplename_str\" pname=\"$name\" rep1=$rep1 rep2=$rep2 signal=1 \' $cmd_file
 
-def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_tss, region_size=5000, bin_size=200, outname='heatmap'):
+def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=False):
     """
     draw heatmap for pp change
     fls_ctrl, fls_case, foramt is like [fn_lb, fn_bed]
@@ -1067,20 +976,23 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
             fn_coverage_tmp = f'{pwout}/intermediate/{fn_lb}.coverage_count.tmp'
             # do we need to calculate the coverage by strand??? 
 
-            # if not os.path.exists(fn_coverage_tmp):
-            logger.info(f'getting coverage for {fn_lb}')
-            s = time.time()
-            cmd = f'bedtools coverage -a {split_bed_per_file} -b {fn_bed} -counts {coverage_by_strand_flag} -sorted > {fn_coverage_tmp}'
-            logger.debug(cmd)
-            retcode = run_shell(cmd)
-            if retcode:
-                logger.error(f'failed to run bedtools coverage for {fn_lb}')
-                return 1
-            # process the coverage file
-            # chr1	323932	323952	NR_028322.1_8   10
-            dur = time.time() - s
-            time_bedtools_coverage += dur
-            logger.debug(f'done, time used = {dur:.2f}s')
+            # if not :
+            if skipe_bedtools_coverage and os.path.exists(fn_coverage_tmp):
+                logger.debug(f'skip bedtools coverage for {fn_lb}')
+            else:
+                logger.info(f'getting coverage for {fn_lb}')
+                s = time.time()
+                cmd = f'bedtools coverage -a {split_bed_per_file} -b {fn_bed} -counts {coverage_by_strand_flag} -sorted > {fn_coverage_tmp}'
+                logger.debug(cmd)
+                retcode = run_shell(cmd)
+                if retcode:
+                    logger.error(f'failed to run bedtools coverage for {fn_lb}')
+                    return 1
+                # process the coverage file
+                # chr1	323932	323952	NR_028322.1_8   10
+                dur = time.time() - s
+                time_bedtools_coverage += dur
+                logger.debug(f'done, time used = {dur:.2f}s')
 
             with open(fn_coverage_tmp) as f:
                 for i in f:
@@ -1254,8 +1166,8 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     idx_gene = 1
     idx_transcript = 0
     idx_gene_cols = list(range(n_gene_cols))
-    if n_gene_cols < 2:
-        logger.error(f'DESeq analysis is for known genes only, the first 2 columns should be Transcript and Gene')
+    # if n_gene_cols < 2:
+    #     logger.error(f'DESeq analysis is for known genes only, the first 2 columns should be Transcript and Gene')
 
     
     # if each group only have one sample
@@ -1265,7 +1177,6 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
         res_df = data.iloc[:, idx_gene_cols]
         res_df['log2FoldChange'] = log2fc
         return res_df, np.array([1, 1])
-
 
     gene_col = data.iloc[:, idx_gene] # use Transcript as index
     counttable.index = data.iloc[:, idx_transcript]
@@ -1284,6 +1195,8 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
         counttable = counttable[genes_to_keep]
 
     inference = DefaultInference(n_cpus=8)
+    # logger.info(counttable.head())
+    # logger.info(metadata)
     dds = DeseqDataSet(
         counts=counttable,
         metadata=metadata,
@@ -1385,7 +1298,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     
     if skip_filtering:
         data_pass = data
-        data_drop = pd.DataFrame()
+        data_drop = pd.DataFrame(columns=data.columns)
         return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
     
     tmp1 = sum([1 if cols_raw[i].startswith('gbc_') else 0 for i in idx_gbc_combined])
@@ -1432,6 +1345,11 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     skip_filtering = islongerna # skip if islongerna
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
     
+    # logger.warning(n_gene_cols)
+    # logger.warning(data.head())
+    # logger.warning(data_pass.head())
+    # logger.warning(data_drop.head())
+    
     if not islongerna:
         data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
     
@@ -1461,10 +1379,14 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     else:  # without normalization factors
         size_factors = None
     
+    # logger.warning(data_pass_gb.head())
+    # logger.warning(data_drop_gb.head())
+    # rows_with_na = data_pass_pp.loc[pd.isna(data_pass_pp).any(axis=1)]
+    # logger.warning(rows_with_na.shape)
+    # logger.warning(rows_with_na.head())
+    
     if rep2 > 0:
         # gb change
-        
-        
         logger.info('running DESeq2')
         with HiddenPrints():
             res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
@@ -1582,15 +1504,16 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
         return 1
     if islongerna:
         pw_change_prefix = f'{out_dir}/eRNA/longeRNA-'
+        n_extra_cols = 0 # chr, start, end, strand
     else:
         pw_change_prefix = f'{out_dir}/known_gene/'
+        n_extra_cols = 4 # chr, start, end, strand
 
     fn_norm = f'{pw_change_prefix}normalized_pp_gb.txt'
 
-    
     data_raw = pd.read_csv(fn, sep='\t')
     data = data_raw.copy()
-    data = data.iloc[:, list(range(n_gene_cols)) + list(range(n_gene_cols + 4, len(data.columns)))]
+    data = data.iloc[:, list(range(n_gene_cols)) + list(range(n_gene_cols + n_extra_cols, len(data.columns)))]
     cols = data.columns
     cols_ppc = [i for i in cols if i.startswith('ppc_')]
     cols_gbc = [i for i in cols if i.startswith('gbc_')]
@@ -1623,7 +1546,6 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2, islongerna=islongerna)
 
     # get the normalized data
-    n_extra_cols = 4 # chr, start, end, strand
     n_prev_cols = n_gene_cols + n_extra_cols
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
     
@@ -1689,7 +1611,7 @@ def add_FDR_col(df, col_pvalue, col_FDR='FDR'):
     return df
 
 
-def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
+def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0):
     """
     fno_prefix, default is empty for known genes, longeRNA- for longeRNA
     adapted from Rscript change_pindex.R
@@ -1768,9 +1690,9 @@ def change_pindex(fno_prefix, n_gene_cols, fn, out_dir, rep1, rep2, window_size,
         data_out[['log2fc', 'pvalue']] = data_pass.iloc[:, n_gene_cols:].apply(lambda x: cmhtest(list(x), rep1, rep2), axis=1, result_type='expand')
         data_out = add_FDR_col(data_out, 'pvalue')
         data_out = data_out.sort_values('FDR')
-        
+
     data_out_full = pd.concat([data_out, data_drop.iloc[:, idx_gene_cols]]).fillna('NA')
-    data_out_full.to_csv(f'{out_dir}/known_gene/{fno_prefix}pindex_change.txt', sep='\t', index=False, na_rep='NA')
+    data_out_full.to_csv(fno, sep='\t', index=False, na_rep='NA')
     # logger.info(f'pindex_change done : {ana_type}')
     # logger.info(data_out.head())
 
@@ -1853,7 +1775,7 @@ def process_gtf(fn_gtf, pwout):
     fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
     fn_gtf_meta_json = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_meta.json'
     if os.path.exists(fn_gtf_pkl):
-        logger.debug('loading gtf from pickle')
+        logger.debug(f'loading gtf from pickle: {fn_gtf_pkl}')
         
         with open(fn_gtf_pkl, 'rb') as f:
             gtf_info = pickle.load(f)
@@ -2026,7 +1948,6 @@ def get_lb(fn):
 
 def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
     """
-    fh_bed can be the real file handle or a subprocess.Popen.stdout object, so do not use seek or tell
     process the bed file, and get the count of the read end regarding strand.
     will export 2 files, 
     1. dict, key = chr, k2 = strand, k3 = chunk_number. value = count of reads with read end in this chunk.  the chunk_number is got from position // bin_size  (default chunksize = 10bp)
@@ -2630,4 +2551,250 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     for sam_lb, nf in factors_d.items():
         data[sam_lb] = data[sam_lb] * nf
     data.to_csv(fn_norm, sep='\t', index=False, na_rep='NA')
+
+
+
+class Analysis:
+    def __init__(self, args, is_long_eRNA=False, skip_get_mapped_reads=False, raw_input=True):
+        
+        self.bin_size = 200 # the bin size for building the pre-count dict of each bed file. compared bin size of 10, 20, 50, 100 and 200 and 500.  200 is the best, maybe because when getting the gb count, the size fit the distribution
+        
+        # folders
+        self.bin_dir = os.path.dirname(os.path.realpath(__file__))
+        self.out_dir = args.pwout or os.getcwd()
+        self.pwout_raw = args.pwout_raw
+        self.pw_bed = f'{args.pwout_raw}/bed'
+        self.inter_dir = os.path.join(self.out_dir, 'intermediate')
+        self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
+        self.longerna = is_long_eRNA # toggle if this is long eRNA
+        self.skip_get_mapped_reads = skip_get_mapped_reads
+
+        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.out_dir, self.inter_dir, self.known_gene_dir]):
+            if not os.path.exists(d):
+                logger.debug(f'Making {lb} directory: {d}')
+                os.makedirs(d)
+
+        self.status = 0
+
+        self.organism = args.organism
+        if self.organism not in {'hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'}:
+            logger.error(f"Invalid organism provided: {self.organism}")
+            self.status = 1
+
+        # input files
+        in1 = process_input(self.pwout_raw, args.in1) if raw_input else args.in1 # return = fn_lb, fn_bed
+        if in1 is None:
+            logger.error("Invalid input files provided for condition1")
+            self.status = 1
+        in2 = (process_input(self.pwout_raw, args.in2) or []) if raw_input else args.in2
+        self.control_bed = in1
+        self.case_bed = in2
+        
+        if self.longerna:
+            self.n_gene_cols = 1
+            self.gene_cols = ['long-eRNA']
+            self.longerna_flag_str = '-longeRNA'
+            self.longerna_prefix = 'longeRNA-'
+        else:
+            self.n_gene_cols = 2
+            self.gene_cols = ['Transcript', 'Gene']
+            self.longerna_flag_str = ''
+            self.longerna_prefix = ''
+        # ref files
+        fa_in = args.fa
+        if fa_in and os.path.exists(fa_in):
+            if not fa_in.endswith('.fa'):
+                logger.error(f"Invalid fasta file provided, file extension should be .fa in plain text. input = {fa_in}")
+                self.status = 1
+        if is_long_eRNA:
+            ref_fls = get_ref_erna(self.organism, fn_gtf=args.gtf)
+        else:
+            ref_fls = get_ref(self.organism, fa_in=fa_in, gtf=args.gtf)
+        if ref_fls is None:
+            logger.error("Error encountered while retrieving reference files")
+            self.status = 1
+            return
+        self.fa = ref_fls['fa']
+        self.gtf = ref_fls['gtf']
+        if not os.path.exists(self.gtf):
+            logger.error(f"GTF file not available: {self.gtf}")
+            self.status = 1
+        
+        # verfify the normalization factors
+        factors = [
+            [args.f1, self.control_bed, 'condition1'],
+            [args.f2, self.case_bed, 'condition2']
+        ]
+        
+        if self.case_bed:
+            if bool(args.f1) != bool(args.f2):
+                logger.error("Please provide normalization factors for both or none of the conditions")
+                self.status = 1
+        for factor, bed, lb in factors:
+            n_bed = len(bed) if bed else 0
+            if factor:
+                if len(factor) != n_bed:
+                    logger.error(f"Number of normalization factors provided for {lb} does not match the number of input files")
+                    self.status = 1
+                for n, f in enumerate(factor):
+                    if f == 0:
+                        logger.error(f"{lb} - factore {n + 1} / {len(factor)}: normalize factor could not be zero!")
+                        self.status = 1
+        
+        if self.status:
+            return
+        
+        self.ref = ref_fls
+        self.input_fls = self.control_bed + (self.case_bed or []) # fn_lb, fn_bed
+        
+        fn_count_pp_gb = f'{self.inter_dir}/{self.longerna_prefix}count_pp_gb.txt'
+        self.out_fls = {
+            'bed_peaks': {},
+            'fdr': {},
+            'count_pp_gb': fn_count_pp_gb
+        }
+        
+        
+
+        
+        fn_lb_uniq = set()
+        fn_lb_dup = {}
+
+        for fn_lb, fn_bed in self.input_fls:
+            # tssCount, tssLength, tssRatio, tssSummit_pos, genebodyCount, genebodyLength, genebodyRatio, tss_vs_genebody_ratio
+            if fn_lb not in fn_lb_uniq:
+                fn_lb_uniq.add(fn_lb)
+            else:
+                fn_lb_dup.setdefault(fn_lb, []).append(fn_bed)
+                continue
+            header_bed_peaks = self.gene_cols + ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
+            fn_bed_peaks = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_raw.txt')
+
+            if not (self.skip_get_mapped_reads and os.path.exists(fn_count_pp_gb)):
+                fh_bed_peaks = open(fn_bed_peaks, 'w')
+                fh_bed_peaks.write('\t'.join(header_bed_peaks) + '\n')
+            else:
+                fh_bed_peaks = open(fn_bed_peaks, 'r')
+            self.out_fls['bed_peaks'][fn_lb] = {'fn': fn_bed_peaks, 'fh': fh_bed_peaks, 'header': header_bed_peaks}
+            
+            header_fdr = header_bed_peaks + ['pvalue', 'FDR']
+            fn_fdr = os.path.join(self.inter_dir, fn_lb + self.longerna_flag_str + '_FDR.txt')
+            self.out_fls['fdr'][fn_lb] = {'fn': fn_fdr, 'header': header_fdr}
+        
+        
+        if fn_lb_dup:
+            tmp = json.dumps(fn_lb_dup, indent=4)
+            logger.error(f'Duplicate file labels found in input file list, please make the file name unique:\n{tmp}')
+            sys.exit(1)
+        
+        # config
+        self.config = {
+            'mapped_sites_only': 0, # 1: only mapped sites are used to calculate the mappable sites, 0: all ATCG bases are used regardless of whether they are covered by reads. in the perl code, it is always set to 0
+            'pro_up': args.up, # define the upstream of TSS as promoter (bp, default: 500)
+            'pro_down': args.down, # define the downstream of TSS as promoter (bp, default: 500)
+            'gb_start': args.gb, # define the start of gene body density calculation (bp, default: 1000)
+            'min_gene_len': args.min_gene_len, # define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored
+            'window_size': args.window, # define the window size (bp, default: 50)
+            'step': args.step, # define the step size (bp, default: 5)
+            'normalize_factor1': args.f1, # normalization factors for samples of condition1
+            'normalize_factor2': args.f2, # normalization factors for samples of condition2
+        }
+        
+
+def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=False):
+    
+    invalid_chr_transcript = 0
+    bin_size = analysis.bin_size
+    # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
+    fail_to_retrieve_seq = 0
+    pwout = analysis.out_dir
+    window_size, step_size = analysis.config['window_size'], analysis.config['step']
+    pw_bed = analysis.pw_bed
+    n = 0
+    prev = [time.time(), 0] # time, get_mapped_reads_count count
+    section_size = 1000 # print log every 1000 loops
+
+    # add more values to gtf_info
+    logger.debug(f'adding more values to gtf_info')
+    s_before_loop = time.time()
+    s = s_before_loop
+    ts_list = list(gtf_info)
+
+    pp_str = {ts: [] for ts in ts_list}
+    gb_str = {ts: [] for ts in ts_list}
+    
+    # seq_pool = {} # key = transcript_id
+    # count_pool = {}
+    # prev_peak_pool = {}
+    # genes_with_N = set()
+    n_ts_init = len(ts_list)
+    for fn_lb, fn_bed in fls:
+        count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pw_bed, bin_size, reuse=reuse_pre_count)
+        prev_peak = {}
+        
+        # exclude the ts that the chr not in the bed files
+        valid_chr = set(count_per_base)
+        chr_excluded = {}
+        ts_excluded = 0
+        ts_list_copy = ts_list.copy()
+        
+        for ts, v in gtf_info.items():
+            ts_chr = v['chr']
+            if ts_chr not in valid_chr:
+                ts_excluded += 1
+                ts_list_copy.remove(ts)
+                if ts in pp_str:
+                    del pp_str[ts]
+                if ts in gb_str:
+                    del gb_str[ts]
+                chr_excluded.setdefault(ts_chr, 0)
+                chr_excluded[ts_chr] += 1
+        if ts_excluded > 0:
+            n_ts_now = len(ts_list_copy)
+            logger.info(f'{ts_excluded} transcripts in GTF file excluded due to chromosome not exist in bed file')
+            logger.debug(f'init ts list = {n_ts_init}, current = {n_ts_now}, drop = {n_ts_init - n_ts_now}, exp drop = {ts_excluded}')
+            logger.debug(f'excluded chr = {chr_excluded}')
+        fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
+        for transcript_id in ts_list_copy:
+            gene_info = gtf_info[transcript_id]
+            chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
+
+            n += 1
+            if n % section_size == 0:
+                now = time.time()
+                prev_time, prev_count = prev
+                time_gap = now - prev_time
+                speed = time_gap * 1000  / (n - prev_count)
+                logger.info(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
+                prev = [now, n]
+
+            # pp_res: {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
+            s = time.time()
+            gbc, gbd, pp_res = get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq,  window_size, step_size, bin_size, prev_peak)
+
+            pp_str[transcript_id].append(str(pp_res['ppc']))
+            gb_str[transcript_id] += [str(gbc), str(gbd)]
+            
+            # write to file
+            # row = ['Transcript', 'Gene', 'tssCount', 'tssLength', 'tssRatio', 'tssSummit_pos', 'genebodyCount', 'genebodyLength', 'genebodyRatio', 'tss_vs_genebody_ratio']
+            row = [transcript_id]
+            if not analysis.longerna:
+                row.append(gene_info['gene_name'])
+            row += [pp_res['ppc'], pp_res['mappable_sites'], pp_res['ppd'], pp_res['summit_pos'], gbc, gb_len_mappable, gbd]
+            pro_vs_pb = round(pp_res['ppd'] / gbd, 4) if gbd else 'NA'
+            row.append(pro_vs_pb)
+            
+            print('\t'.join(map(str, row)), file=fh_bed_peaks)
+        # # release memory
+        del count_per_base
+        del count_bin 
+        gc.collect()
+        
+    if fail_to_retrieve_seq:
+        logger.warning(f'failed to retrieve sequence for {fail_to_retrieve_seq} genes')
+
+    if invalid_chr_transcript:
+        logger.warning(f"Number of genes with invalid chromosome = {invalid_chr_transcript}")
+
+    return pp_str, gb_str
 

@@ -1068,7 +1068,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     my_palette = LinearSegmentedColormap.from_list("custom_palette", colors, N=5)
     
     # Bottom color bar (equivalent to the first image call in R)
-    axs[1].imshow(np.arange(1, 6).reshape(-1, 1), cmap=my_palette, aspect='auto')
+    axs[1].imshow(np.arange(1, 6).reshape(1, -1), cmap=my_palette, aspect='auto')
     axs[1].axis('off')
     axs[1].xaxis.set_ticks_position('none')
     axs[1].set_xticks([0, 2, 4])

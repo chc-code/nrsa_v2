@@ -1,7 +1,7 @@
 #! /data/cqs/chenh19/project/nrsa_v2/miniconda3/bin/python3.12
 
 
-import os, sys
+import os, sys, time
 import re
 import traceback
 import pickle
@@ -153,7 +153,7 @@ def updatelogger(logger, fn_log, terminal_level=None):
 logger = getlogger(logger_name='NRSA')
 
 def main(args):
-    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal
+    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util
 
     args_d = vars(args)
     demo = args.demo
@@ -207,6 +207,7 @@ def main(args):
     if not (demo and os.path.exists(f'{pw_homer}/tagInfo.txt')):
         bed_list = ' '.join([_[1] for _ in in1 + in2])
         logger.info('makeTagDirectory...')
+        s = time.time()
         cmd_homer = f'makeTagDirectory {pw_homer} -format bed -forceBED  {bed_list}'
         status = os.system(cmd_homer)
         if status:
@@ -220,6 +221,8 @@ def main(args):
         if status:
             logger.error("Error encountered while running findPeaks")
             return status
+    
+        time_cost_util['homer'] = time.time() - s
     else:
         logger.warning(f'demo mode, Skip HOMER commands.')
 

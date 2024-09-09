@@ -27,6 +27,7 @@ def getargs():
     # ps.add_argument('-overwrite', help="""if the mapped reads count file already exists, overwrite it, default is reuse the old ones""", action='store_true')
     ps.add_argument('-verbose', '-v', help="""verbose mode, print more information""", action='store_true')
     ps.add_argument('-demo', help="""demo mode, skip running the get_mapped_reads step if already exist""", action='store_true')
+    ps.add_argument('-ignore', help="""ignore the existing pre-counting results""", action='store_true')
     # ps.add_argument('-testfunc', help="""test the new functions,debug mode""", action='store_true')
     args = ps.parse_args()
     

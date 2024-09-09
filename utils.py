@@ -759,7 +759,7 @@ def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance
                     bin_sn += 1
                     print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{bin_sn}', file=o)
         # sort it
-        retcode = runshell(f'bedtools sort -i {fno} > {fno}.tmp && mv {fno}.tmp {fno}')
+        retcode = run_shell(f'bedtools sort -i {fno} > {fno}.tmp && mv {fno}.tmp {fno}')
         return fno
     
     # build the new tss for the first file, and use it  for the rest
@@ -947,7 +947,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                     print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t-1\t{strand}', file=o)
         # logger.info('sort split region bed 2')
         fntmp = f'{fno}.tmp'
-        retcode = runshell(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
+        retcode = run_shell(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
 
         return fno
     
@@ -2047,7 +2047,7 @@ def process_input(pwout_raw, fls):
             # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
             # bedtools sort is faster than linux sort
             cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
-            retcode = runshell(cmd)
+            retcode = run_shell(cmd)
             ires = [fn_lb, fn_out_bed]
         elif fn_for_check.endswith('.bed'):
             # check if sorted
@@ -2059,13 +2059,13 @@ def process_input(pwout_raw, fls):
             if is_sorted:
                 fn_abs = os.path.realpath(fn)
                 fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
-                retcode = runshell(f'ln -sf {fn_abs} {fn_dest}')
+                retcode = run_shell(f'ln -sf {fn_abs} {fn_dest}')
                 ires = [fn_lb, fn_dest]
             else:
                 logger.warning(f'input bed is not sorted, now sorting...')
                 # bedtools can handle gzip format
                 cmd = f'bedtools sort -i {fn} > {fn_out_bed}'
-                retcode = runshell(cmd)
+                retcode = run_shell(cmd)
                 ires = [fn_lb, fn_out_bed]
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
@@ -2526,7 +2526,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     if condition == 1:
         # no case samples
         if n_ctrl == 1:
-            retcode = runshell(f'cp {fn_count_enhancer} {fn_norm}')
+            retcode = run_shell(f'cp {fn_count_enhancer} {fn_norm}')
         else:
             pass # save norm data at the end
     else:

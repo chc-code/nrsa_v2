@@ -22,6 +22,11 @@ pw_code = os.path.dirname(os.path.realpath(__file__))
 inf_neg = float('-inf')
 bases_set = set('ATGCatgc')
 
+time_cost_util = {
+    'bedtools_around_enhancer_center': 0,
+    'bedtools_around_tss_for_heatmap': 0,
+    
+    }
 
 class HiddenPrints:
     def __enter__(self):
@@ -651,9 +656,11 @@ def calculate_signal(fn_lb, fn_bed, fn_split_bin_bed, fn_coverage, demo=False):
     if demo and os.path.exists(fn_coverage):
         logger.debug(f'skipped bedtools coverage for enhancer center, {fn_lb}')
     else:
-        logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')    
+        logger.debug(f'bedtools coverage around enhancer center: {fn_lb}')
+        s = time.time()
         cmd = f'bedtools coverage -a {fn_split_bin_bed} -b {fn_bed} -counts -sorted > {fn_coverage}'
         retcode, stdout, stderr = run_shell(cmd, ret_info=True)
+        time_cost_util['bedtools_around_enhancer_center'] += time.time() - s
         if retcode:
             logger.error(f'failed to run bedtools coverage for {fn_lb}')
             logger.debug(stderr)
@@ -752,7 +759,7 @@ def draw_signal(pwout, fn_enhancer_center, fls_ctrl, fls_case, chr_map, distance
                     bin_sn += 1
                     print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{bin_sn}', file=o)
         # sort it
-        os.system(f'bedtools sort -i {fno} > {fno}.tmp && mv {fno}.tmp {fno}')
+        retcode = runshell(f'bedtools sort -i {fno} > {fno}.tmp && mv {fno}.tmp {fno}')
         return fno
     
     # build the new tss for the first file, and use it  for the rest
@@ -940,7 +947,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                     print(f'{chr_orig}\t{pos}\t{pos + bin_size}\t{ts}_{bin_sn}\t-1\t{strand}', file=o)
         # logger.info('sort split region bed 2')
         fntmp = f'{fno}.tmp'
-        os.system(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
+        retcode = runshell(f'bedtools sort -i {fno} > {fntmp} && mv {fntmp} {fno}')
 
         return fno
     
@@ -991,6 +998,7 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                 # process the coverage file
                 # chr1	323932	323952	NR_028322.1_8   10
                 dur = time.time() - s
+                time_cost_util['bedtools_around_tss_for_heatmap'] += dure
                 time_bedtools_coverage += dur
                 logger.debug(f'done, time used = {dur:.2f}s')
 
@@ -1075,8 +1083,6 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     plt.savefig(fn_out_pdf, bbox_inches='tight', dpi=300)
     plt.close()
     
-    # os.system(f'rm {pwout}/intermediate/*.tmp')
-
 
 def groseq_fisherexact_pausing_for_gene(c1, l1, c2, l2):
     """
@@ -2041,7 +2047,7 @@ def process_input(pwout_raw, fls):
             # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
             # bedtools sort is faster than linux sort
             cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
-            os.system(cmd)
+            retcode = runshell(cmd)
             ires = [fn_lb, fn_out_bed]
         elif fn_for_check.endswith('.bed'):
             # check if sorted
@@ -2053,13 +2059,13 @@ def process_input(pwout_raw, fls):
             if is_sorted:
                 fn_abs = os.path.realpath(fn)
                 fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
-                os.system(f'ln -sf {fn_abs} {fn_dest}')
+                retcode = runshell(f'ln -sf {fn_abs} {fn_dest}')
                 ires = [fn_lb, fn_dest]
             else:
                 logger.warning(f'input bed is not sorted, now sorting...')
                 # bedtools can handle gzip format
                 cmd = f'bedtools sort -i {fn} > {fn_out_bed}'
-                os.system(cmd)
+                retcode = runshell(cmd)
                 ires = [fn_lb, fn_out_bed]
         else:
             logger.error(f"Input file '{fn}' should be in bed or bam format")
@@ -2498,7 +2504,7 @@ def filter_by_tss_tts(line, tss_tts_info, filter_tss=2000, filter_tts=20000):
     return keep
 
 def sort_bed_like_file(fn):
-    status = os.system(f'sort -k 1,1 -k 2,2n {fn} > {fn}.sorttmp;mv {fn}.sorttmp {fn}')
+    status = run_shell(f'sort -k 1,1 -k 2,2n {fn} > {fn}.sorttmp;mv {fn}.sorttmp {fn}')
     if status:
         logger.error(f'fail to sort file {fn}')
     return status
@@ -2520,7 +2526,7 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     if condition == 1:
         # no case samples
         if n_ctrl == 1:
-            os.system(f'cp {fn_count_enhancer} {fn_norm}')
+            retcode = runshell(f'cp {fn_count_enhancer} {fn_norm}')
         else:
             pass # save norm data at the end
     else:

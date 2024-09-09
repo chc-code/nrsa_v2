@@ -44,7 +44,7 @@ from types import SimpleNamespace
 import traceback
 import gc
 
-from utils import check_dependency, run_shell, process_input, get_seqence_from_fa, build_idx_for_fa, get_ref, process_gtf, get_peak,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf
+from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util
 
 from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
@@ -405,6 +405,7 @@ def main(args):
         header_extra += [f'{fn_lb}-pindex', f'{fn_lb}-pvalue', f'{fn_lb}-FDR']
     header = analysis.gene_cols + header_extra
     fno =  os.path.join(analysis.known_gene_dir, fno_prefix + 'pindex.txt') 
+    fno_pindex_change =  os.path.join(analysis.known_gene_dir, fno_prefix + 'pindex_change.txt') 
     with open(fno, 'w') as o:
         print('\t'.join(header), file=o)
         for transcript_id, data in pause_index_str.items():
@@ -417,11 +418,10 @@ def main(args):
     # boxplot
     logger.info(f'plotting boxplot')
     draw_box_plot(n_gene_cols, analysis.out_dir, 'boxplot', rep1, rep2)
-
     if rep2 > 0:
         # change_pindex
         logger.debug('Running change_pindex')
-        change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
+        change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, fno_pindex_change, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0)
         
         
         # simple_heatmap
@@ -434,6 +434,9 @@ def main(args):
         # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
 
         draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
+
+    tmp = json.dumps(time_cost_util, indent=4)
+    logger.info(tmp)
 
         # modify here
         # logger.info('debug exit')

@@ -997,10 +997,11 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                     return 1
                 # process the coverage file
                 # chr1	323932	323952	NR_028322.1_8   10
-                dur = time.time() - s
+                dure = time.time() - s
                 time_cost_util['bedtools_around_tss_for_heatmap'] += dure
-                time_bedtools_coverage += dur
-                logger.debug(f'done, time used = {dur:.2f}s')
+                time_bedtools_coverage += dure
+                logger.debug(f'done, time used = {dure:.2f}s')
+
 
             with open(fn_coverage_tmp) as f:
                 for i in f:
@@ -1175,9 +1176,8 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # if n_gene_cols < 2:
     #     logger.error(f'DESeq analysis is for known genes only, the first 2 columns should be Transcript and Gene')
 
-    
     # if each group only have one sample
-    n_sam = counttable.shape[0]
+    n_sam = counttable.shape[1]
     if n_sam == 2:
         log2fc = np.log2(data.iloc[:, n_gene_cols + 1]) / (data.iloc[:, n_gene_cols])
         res_df = data.iloc[:, idx_gene_cols]

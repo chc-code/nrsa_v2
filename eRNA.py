@@ -157,7 +157,7 @@ def updatelogger(logger, fn_log, terminal_level=None):
 logger = getlogger(logger_name='NRSA')
 
 
-from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util, parse_design_table
+from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util, parse_design_table, pause_longeRNA_main
 
 
 def main(args):
@@ -589,7 +589,6 @@ def main(args):
     if lerna_out:
         logger.info(f'Detecting long eRNA change...')
         # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
-        from pause_longeRNA import main as pause_long
         args = SimpleNamespace()
         args.in1 = in1
         args.in2 = in2
@@ -602,7 +601,7 @@ def main(args):
         args.f2 = None  # the f1 and f2 are get from nf.txt
         args.skip_get_mapped_reads = 1 if demo else 0
         logger.info('running pause longeRNA')
-        pause_long(args)
+        pause_longeRNA_main(args)
     
 
     
@@ -814,7 +813,7 @@ if __name__ == "__main__":
             logger.debug(e)
             sys.exit(1)
 
-    if retcode:
+    if not retcode:
         logger.debug(f'g@script finished without error')
     else:
         logger.debug(f'error encountered during running')

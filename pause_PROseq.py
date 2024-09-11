@@ -488,7 +488,7 @@ if __name__ == "__main__":
             logger.debug(e)
             sys.exit(1)
 
-    if retcode:
+    if not retcode:
         logger.debug(f'g@script finished without error')
     else:
         logger.debug(f'error encountered during running')

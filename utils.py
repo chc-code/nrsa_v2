@@ -2893,3 +2893,191 @@ def parse_design_table(args):
     else:
         logger.error(f"No input files provided, either use -in1 / in2 or provide a design table, input arguments = {vars(args)}")
         sys.exit(1)
+
+def pause_longeRNA_main(args):
+    """
+    args: an object with attributes equiv to the argparse object, must specify 
+    """
+
+    # check if the attributes are present
+    defined_attrs = vars(args)
+    required_attrs = {'in1', 'pwout', 'organism', 'pw_bed', 'gtf'}
+    # f1, f2 = normalization factors
+    
+    optional_attrs = {
+        'in2': None,
+        'fa': None,
+        'up': 500,
+        'down': 500,
+        'gb': 1000,
+        'min_gene_len': 1000,
+        'window': 50,
+        'step': 5,
+        'ignore': False,
+        'skip_get_mapped_reads': False,
+    }
+    pwout = args.pwout
+    pw_bed = args.pw_bed
+    missing = required_attrs - set(defined_attrs)
+    exist = required_attrs & set(defined_attrs)
+    for attr in exist:
+        if getattr(args, attr) is None:
+            missing.add(attr)
+    if missing:
+        logger.error(f"Missing required attributes: {sorted(missing)}")
+        return 1
+    for attr, default in optional_attrs.items():
+        if attr not in defined_attrs:
+            setattr(args, attr, default)
+    # check dependencies
+    
+    skip_get_mapped_reads = args.skip_get_mapped_reads
+    dependency_status = check_dependency()
+    if dependency_status:
+        logger.error("Dependency check failed")
+        sys.exit(1)
+
+    analysis = Analysis(args, is_long_eRNA=True, raw_input=False, skip_get_mapped_reads=skip_get_mapped_reads) # raw_input set as False, will not run the process_input function
+    if analysis.status:
+        logger.error("Exit now")
+        sys.exit(1)
+    
+    logger.debug(f'running pause_longeRNA: {vars(args)}')
+
+    rep1 = len(analysis.control_bed)
+    rep2 = len(analysis.case_bed) if analysis.case_bed else 0
+    window_size = analysis.config['window_size']
+    
+    # get the normalization factors
+    factor_flag = 1
+    fn_nf = f'{pwout}/intermediate/nf.txt'
+    nf_d = {}
+    try:
+        with open(fn_nf) as f:
+            f.readline() # header
+            for i in f:
+                lb, v = i[:-1].split('\t')
+                nf_d[lb] = float(v)
+        logger.debug(f'previous normalization factors loaded')
+    except:
+        e = traceback.format_exc()
+        logger.error(f'fail to get normalization factor, please make sure pause_PROseq is executed')
+        logger.error(e)
+        sys.exit(1)
+    
+    factor1 = [nf_d[lb] for lb, _ in analysis.control_bed]
+    factor2 = [nf_d[lb] for lb, _ in analysis.case_bed]
+    
+    logger.debug(f'nf = {nf_d}')
+
+    pro_up, pro_down, gb_down_distance, min_gene_len = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len']]
+
+    # process the GTF file
+    fn_gtf = analysis.ref['gtf']
+    logger.debug(f"Processing longeRNA gtf file: {fn_gtf}")
+    
+    gtf_info = {}
+    with open(fn_gtf) as f:
+        f.readline()  # header
+        # chr     start   end     strand
+        # chr1    27365605        27376193        -
+        # chr1    99872187        99904465        -
+        # chr1    103653695       103664771       -
+        # {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end}
+        for i in f:
+            chr_, s, e, strand = i[:-1].split('\t')
+            ts = f'{chr_}:{s}-{e}:{strand}'
+            ires = {'chr': chr_, 'strand': strand, 'start': int(s), 'end': int(e)}
+            gtf_info[ts] = add_value_to_gtf(ires, pro_up, pro_down, gb_down_distance) 
+    
+    # prepare fasta file
+    fn_fa = analysis.ref['fa']
+    fa_idx = build_idx_for_fa(fn_fa)
+    fh_fa = open(fn_fa, 'r')
+
+    fls = analysis.input_fls # element is [fn_lb, fn_bed]
+    sam_order = [_[0] for _ in fls]
+    n_gene_cols = analysis.n_gene_cols
+
+    def close_fh():
+        # close file handle
+        for fn_lb, fn_bed in fls:
+            analysis.out_fls['bed_peaks'][fn_lb]['fh'].close()
+        fh_fa.close()
+
+    fn_count_pp_gb = analysis.out_fls['count_pp_gb']
+    if skip_get_mapped_reads and os.path.exists(fn_count_pp_gb):
+        logger.warning(f'demo mode, skip getting pp_gb count, reuse prev res')
+        close_fh()
+    else:
+        reuse_pre_count = True # modify here
+        logger.info(f'Getting pp_gb count')
+        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
+        close_fh()
+    
+        # count_pp_gb
+        logger.info('Building count_pp_gb')
+        prefix = 'longeRNA-' if analysis.longerna else ''
+        header = analysis.gene_cols
+        header_pp = []
+        header_gb = []
+        for fn_lb, fn_bed in fls:
+            header_gb += [f'gbc_{fn_lb}', f'gbd_{fn_lb}']
+            header_pp.append(f'ppc_{fn_lb}')
+        header += header_pp + header_gb
+        
+        with open(fn_count_pp_gb, 'w') as o:
+            print('\t'.join(header), file=o)
+            for transcript_id in pp_str:
+                gene_info = gtf_info[transcript_id]
+                row = [transcript_id]
+                row += pp_str[transcript_id] + gb_str[transcript_id]
+                print('\t'.join(row), file=o)
+
+        
+    # calculate FDR
+    close_fh()
+    logger.info('Calculating FDR')
+    pause_index_str = {}
+    for fn_lb, fn_bed in fls:
+        fn_peak = analysis.out_fls['bed_peaks'][fn_lb]['fn']
+        fn_fdr = analysis.out_fls['fdr'][fn_lb]['fn']
+        pause_index_str = get_FDR_per_sample(fn_lb, fn_peak, fn_fdr,  pause_index_str)
+
+    pause_index_str_new = {}
+    for transcript_id, v1 in pause_index_str.items():
+        v2 = []
+        for isam in sam_order:
+            v3 = v1.get(isam, ['NA', 'NA', 'NA'])
+            v2 += v3
+        pause_index_str_new[transcript_id] = v2
+    pause_index_str = pause_index_str_new
+    
+
+    fno_prefix = 'longeRNA-' if analysis.longerna else ''
+
+    # modify here
+    logger.info('Change_pp_gb')
+    # logger.warning('modify here')
+    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=True)
+    
+    logger.debug('Dump pindex.txt')
+    header_extra = []
+    for fn_lb, fn_bed in fls:
+        header_extra += [f'{fn_lb}-pindex', f'{fn_lb}-pvalue', f'{fn_lb}-FDR']
+    header = analysis.gene_cols + header_extra
+    fno =  f'{pwout}/eRNA/{fno_prefix}pindex.txt'
+    fno_pindex_change = f'{pwout}/eRNA/{fno_prefix}pindex_change.txt'
+    with open(fno, 'w') as o:
+        print('\t'.join(header), file=o)
+        for transcript_id, data in pause_index_str.items():
+            row = [transcript_id]
+            if not analysis.longerna:
+                row.append(gtf_info[transcript_id]['gene_name'])
+            row += data
+            print('\t'.join(map(str, row)), file=o)
+
+    if rep2 > 0:
+        # change_pindex
+        logger.info('Running change_pindex')
+        change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, fno_pindex_change, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)

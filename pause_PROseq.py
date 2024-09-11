@@ -41,11 +41,10 @@ import sys, os, re
 import logging
 import pickle
 import json
-from types import SimpleNamespace
 import traceback
 import gc
 
-from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util
+from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table
 
 from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
@@ -236,8 +235,6 @@ def main(args):
     if analysis.status:
         logger.error("Exit now")
         sys.exit(1)
-    
-    logger.debug(vars(args))
 
     rep1 = len(analysis.control_bed)
     rep2 = len(analysis.case_bed) if analysis.case_bed else 0
@@ -453,10 +450,6 @@ def main(args):
         # get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
 
 
-def get_new_args(args, update_dict):
-    args_dict = vars(args)
-    args_dict.update(update_dict)
-    return SimpleNamespace(**args_dict)
 
     
 if __name__ == "__main__":
@@ -477,7 +470,6 @@ if __name__ == "__main__":
     logger.debug(f'working in {os.getcwd()}')
     logger.debug(f'inpu args = {vars(args)}')
     
-
     pwout_raw = os.path.realpath(args.pwout)
     logger.debug(f'pw_out_raw = {pwout_raw}')
     args.pwout = pwout_raw
@@ -485,70 +477,18 @@ if __name__ == "__main__":
     args.pw_bed = f'{pwout_raw}/bed'
     if not os.path.exists(args.pw_bed):
         os.makedirs(args.pw_bed, exist_ok=True)
-    args.organism = args.organism
 
-    if args.in1 is not None:
-        # logger.info('Processing input files')
+    arg_list = parse_design_table(args)
+    for comp_str, iargs in arg_list:
+        if comp_str:
+            logger.info(f'now running {comp_str}')
+        logger.debug(vars(iargs))
         try:
-            main(args)
+            main(iargs)
         except:
             e = traceback.format_exc()
-            logger.error(f'Error found during running, please check the log file for more information')
+            logger.error(f'Error found during running, please check the log file for more information: {fn_log}')
             logger.debug(e)
             sys.exit(1)
-    elif args.design_table is not None:
-        group_info = {}  # key = group name, v = file list
-        comparison = []
-        groups_in_comparison = set()
-        group_info['null'] = []
-        with open(args.design_table) as f:
-            for line in f:
-                if line.startswith('#'):
-                    continue
-                if line.startswith('@@'):
-                    tmp = line[2:].strip().split('\t')
-                    if len(tmp) != 2:
-                        logger.error(f"Invalid comparison definition: {line}, should have 2 columns, col1 = case group, col2 = control group")
-                        sys.exit(1)
-                    comparison.append(tmp)
-                    groups_in_comparison |= set(tmp)
-                else:
-                    tmp = line.strip().split('\t')
-                    if len(tmp) != 2:
-                        logger.error(f"Invalid line: {line}, should have 2 columns, col1 = file path, col2 = group name")
-                        sys.exit(1)
-                    group_info.setdefault(tmp[1], []).append(tmp[0])
-            
-            group_not_defined = groups_in_comparison - set(group_info)
-            if group_not_defined:
-                logger.error(f"Groups in comparison not defined in the sample section: {sorted(group_not_defined)}")
-                sys.exit(1)
-            
-            # if no comparison defined, process each group separately
-            if len(comparison) == 0:
-                logger.error(f'No comparison defined in {args.design_table}, please use @@ to define the comparison .If need to process a group separately, use @@null\\tgroup_name')
-                sys.exit(1)
-            else:
-                for case, control in comparison:
-                    update_dict = {}
-                    update_dict['in1'] = group_info[control]
-                    update_dict['in2'] = group_info[case] or None
-                    comp_str = control if case == 'null' else f'{case}_vs_{control}'
-                    out_dir = os.path.join(pwout_raw, comp_str)
-                    update_dict['pwout'] = out_dir
-                    
-                    args_new = get_new_args(args, update_dict)
-                    # logger.info(vars(args_new))
-                    logger.info(f'Processing {comp_str}')
-                    try:
-                        main(args_new)
-                    except:
-                        e = traceback.format_exc()
-                        logger.error(f'Error found during running, please check the log file for more information')
-                        logger.debug(e)
-                        sys.exit(1)
-    else:
-        logger.error("No input files provided, either use -in1 / in2 or provide a design table")
-        sys.exit(1)
 
     logger.debug('script finished without any error')

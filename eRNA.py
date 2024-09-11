@@ -22,7 +22,7 @@ def green(s):
 
 
 
-def getarg():
+def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
@@ -50,6 +50,8 @@ def getarg():
     ps.add_argument('-verbose', '-v', help="""verbose mode, show debug level logging info""", action='store_true')
     args = ps.parse_args()
     return args
+
+args = getargs()
 
 def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
     import logging
@@ -152,9 +154,11 @@ def updatelogger(logger, fn_log, terminal_level=None):
 
 logger = getlogger(logger_name='NRSA')
 
-def main(args):
-    from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util
 
+from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util, parse_design_table
+
+
+def main(args):
     args_d = vars(args)
     demo = args.demo
     organism = args.organism
@@ -582,7 +586,7 @@ def main(args):
     if lerna_out:
         logger.info(f'Detecting long eRNA change...')
         # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
-        from pause_longeRNA import main
+        from pause_longeRNA import main as pause_long
         args = SimpleNamespace()
         args.in1 = in1
         args.in2 = in2
@@ -595,7 +599,7 @@ def main(args):
         args.f2 = None  # the f1 and f2 are get from nf.txt
         args.skip_get_mapped_reads = 1 if demo else 0
         logger.info('running pause longeRNA')
-        main(args)
+        pause_long(args)
     
 
     
@@ -768,7 +772,7 @@ def main(args):
     return 0
 
 if __name__ == "__main__":
-    args = getarg()
+    args = getargs()
     pwout = args.pwout
     os.makedirs(pwout, exist_ok=True)
     fn_log = f'{pwout}/eRNA.run.log'
@@ -783,11 +787,32 @@ if __name__ == "__main__":
 
     logger.debug(f'working in {os.getcwd()}')
     logger.debug(f'inpu args = {vars(args)}')
-    try:
-        retcode = main(args)
-    except:
-        e = traceback.format_exc()
-        logger.error(e)
-        sys.exit(1)
+
+
+    pwout_raw = os.path.realpath(args.pwout)
+    logger.debug(f'pw_out_raw = {pwout_raw}')
+    args.pwout = pwout_raw
+    args.pwout_raw = pwout_raw
+    args.pw_bed = f'{pwout_raw}/bed'
+    if not os.path.exists(args.pw_bed):
+        os.makedirs(args.pw_bed, exist_ok=True)
+
+    arg_list = parse_design_table(args)
+    for comp_str, iargs in arg_list:
+        if comp_str:
+            logger.info(f'now running {comp_str}')
+        logger.debug(vars(iargs))
+        try:
+            retcode = main(iargs)
+        except:
+            e = traceback.format_exc()
+            logger.error(f'Error found during running, please check the log file for more information: {fn_log}')
+            logger.debug(e)
+            sys.exit(1)
+
+    if retcode:
+        logger.debug(f'script finished without error')
+    else:
+        logger.debug(f'error encountered during running')
 
     sys.exit(retcode)

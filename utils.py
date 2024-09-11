@@ -16,6 +16,7 @@ import fisher
 import traceback
 import bisect 
 import gc
+from types import SimpleNamespace
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
 pw_code = os.path.dirname(os.path.realpath(__file__))
@@ -2813,3 +2814,76 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
 
     return pp_str, gb_str
 
+def get_new_args(args, update_dict):
+    args_dict = vars(args)
+    args_dict.update(update_dict)
+    return SimpleNamespace(**args_dict)
+
+
+def parse_design_table(args):
+    pwout_raw = os.path.realpath(args.pwout)
+    args.pwout = pwout_raw
+    args.pwout_raw = pwout_raw
+    args.pw_bed = f'{pwout_raw}/bed'
+    if not os.path.exists(args.pw_bed):
+        os.makedirs(args.pw_bed, exist_ok=True)
+
+    if args.in1 is not None:
+        return [['', args]]
+    elif args.design_table is not None:
+        group_info = {}  # key = group name, v = file list
+        comparison = []
+        groups_in_comparison = set()
+        group_info['null'] = []
+        new_arg_list = []
+        err = 0
+        with open(args.design_table) as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                if line.startswith('@@'):
+                    tmp = line[2:].strip().split('\t')
+                    if len(tmp) != 2:
+                        logger.error(f"Invalid comparison definition: {line}, should have 2 columns, col1 = case group, col2 = control group")
+                        sys.exit(1)
+                    comparison.append(tmp)
+                    groups_in_comparison |= set(tmp)
+                else:
+                    tmp = line.strip().split('\t')
+                    if len(tmp) != 2:
+                        logger.error(f"Invalid line: {line}, should have 2 columns, col1 = file path, col2 = group name")
+                        err = 1
+                        continue
+                    fn = os.path.realpath(tmp[0])
+                    if not os.path.exists(fn):
+                        logger.error(f'input file not exist: {tmp[0]}')
+                        err = 1
+                        continue
+                    group_info.setdefault(tmp[1], []).append(fn)
+            if err:
+                logger.error('quit now.')
+                sys.exit(1)
+            group_not_defined = groups_in_comparison - set(group_info)
+            if group_not_defined:
+                logger.error(f"Groups in comparison not defined in the sample section: {sorted(group_not_defined)}, quit now")
+                sys.exit(1)
+            
+            # if no comparison defined, process each group separately
+            if len(comparison) == 0:
+                logger.error(f'No comparison defined in {args.design_table}, please use @@ to define the comparison .If need to process a group separately, use @@null\\tgroup_name, quit now.')
+                sys.exit(1)
+            else:
+                for case, control in comparison:
+                    update_dict = {}
+                    update_dict['in1'] = group_info[control]
+                    update_dict['in2'] = group_info[case] or None
+                    comp_str = control if case == 'null' else f'{case}_vs_{control}'
+                    out_dir = os.path.join(pwout_raw, comp_str)
+                    update_dict['pwout'] = out_dir
+                    
+                    args_new = get_new_args(args, update_dict)
+                    new_arg_list.append([comp_str, args_new])
+        return new_arg_list
+    else:
+        logger.error(f"No input files provided, either use -in1 / in2 or provide a design table, input arguments = {vars(args)}")
+        sys.exit(1)

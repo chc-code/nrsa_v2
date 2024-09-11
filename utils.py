@@ -1054,36 +1054,43 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     cutoff1 = round(cutoff, 1)
     df_delta = df_delta.clip(lower=-cutoff, upper=cutoff)
     # logger.info(df_delta.head())
+    
+    
     # plot
-
+    n_color_block = 5
+    with PdfPages(fn_out_pdf) as pdf:
     # Set up the layout and figure size
-    fig, axs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [10, 1]}, figsize=(6, 18))
-    plt.subplots_adjust(hspace=0)
+        plt.figure(figsize=(6, 18))
+        grid = plt.GridSpec(2, 1, height_ratios=[12, 1])
 
-    lab = round(region_size / 1000, 1) # label for the heatmap
-    # Define color palette
-    colors = ["blue", "yellow"]
+        lab = round(region_size / 1000, 1) # label for the heatmap
+        # Define color palette
+        colors = ["blue", "yellow"]
 
-    # Create a colormap with 5 discrete colors
-    my_palette = LinearSegmentedColormap.from_list("custom_palette", colors, N=5)
-    
-    # Bottom color bar (equivalent to the first image call in R)
-    axs[1].imshow(np.arange(1, 6).reshape(1, -1), cmap=my_palette, aspect='auto')
-    axs[1].axis('off')
-    axs[1].xaxis.set_ticks_position('none')
-    axs[1].set_xticks([0, 2, 4])
-    axs[1].set_xticklabels([f"-{cutoff1}", "0", f"+{cutoff1}"], fontsize=12)
-
-    # Main heatmap (equivalent to the second image call in R)
-    im = axs[0].imshow(df_delta, cmap=my_palette, vmin=-cutoff, vmax=cutoff, aspect='auto')
-    axs[0].axis('off')
-    axs[0].set_xticks([0, df_delta.shape[1] // 2, df_delta.shape[1] - 1])
-    axs[0].set_xticklabels([f"-{lab}K", "0", f"+{lab}K"], fontsize=12)
-
-    # Save the figure as PDF
-    plt.savefig(fn_out_pdf, bbox_inches='tight', dpi=300)
-    plt.close()
-    
+        # Create a colormap with 5 discrete colors
+        my_palette = LinearSegmentedColormap.from_list("custom_palette", colors, N=n_color_block)
+        n_cols = df_delta.shape[1]
+        
+        ax1 = plt.subplot(grid[0, 0])
+        ax1.imshow(df_delta, cmap=my_palette, vmin=-cutoff, vmax=cutoff, aspect='auto')
+        ax1.set_xticks([0, n_cols // 2, n_cols - 1])
+        ax1.set_xticklabels([f"-{lab}K", "0", f"+{lab}K"], fontsize=12)
+        ax1.set_yticks([])
+        ax1.set_xlabel("")
+        ax1.set_ylabel("")
+        
+        
+        ax2 = plt.subplot(grid[1, 0])
+        ax2.imshow(np.arange(1, n_color_block + 1).reshape(1, -1), cmap=my_palette, aspect='auto')
+        ax2.set_xticks([0, 2, 4])
+        ax2.set_xticklabels([f'-{cutoff1}', '0', f'+{cutoff1}'])
+        ax2.set_yticks([])
+        ax2.set_xlabel("")
+        ax2.set_ylabel("")
+        
+        
+        pdf.savefig(bbox_inches='tight')
+        plt.close()
 
 def groseq_fisherexact_pausing_for_gene(c1, l1, c2, l2):
     """

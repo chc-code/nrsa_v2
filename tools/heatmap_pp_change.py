@@ -324,6 +324,9 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
 
 def get_pwbed(pwout):
     # /nobackup/h_vangard_1/wangj52/eNRSA/test-Matt-IFN-R1/INF_Cre_30min_vs_INF_EV_30min
+    tmp = f'{pwout}/bed'
+    if os.path.exists(tmp):
+        return tmp
     pwroot = os.path.dirname(pwout)
     pw_bed = f'{pwroot}/bed'
     if not os.path.exists(pw_bed):

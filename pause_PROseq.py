@@ -69,20 +69,20 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         def __init__(self, nocolor=False):
             self.nocolor = nocolor
         colors = {
-            'black': '\u001b[30;20m',
-            'red': '\u001b[31;20m',
-            'r': '\u001b[31;20m',
+            'black': '\u001b[30;1m',
+            'red': '\u001b[31;1m',
+            'r': '\u001b[31;1m',
             'bold_red': '\u001b[31;1m',
             'rb': '\u001b[31;1m',
-            'green': '\u001b[32;20m',
-            'g': '\u001b[32;20m',
+            'green': '\u001b[32;1m',
+            'g': '\u001b[32;1m',
             'gb': '\u001b[32;1m',
-            'yellow': '\u001b[33;20m',
-            'blue': '\u001b[34;20m',
-            'b': '\u001b[34;20m',
+            'yellow': '\u001b[33;1m',
+            'blue': '\u001b[34;1m',
+            'b': '\u001b[34;1m',
             'purple': '\u001b[35;1m',
             'p': '\u001b[35;1m',
-            'grey': '\u001b[38;20m',
+            'grey': '\u001b[38;1m',
         }
         FORMATS = {
             logging.WARNING: colors['purple'],
@@ -478,7 +478,7 @@ if __name__ == "__main__":
     retcode = 0
     for comp_str, iargs in arg_list:
         if comp_str:
-            logger.info(f'now running {comp_str}')
+            logger.info(f'g@now running {comp_str}')
         logger.debug(vars(iargs))
         try:
             retcode = main(iargs) or retcode
@@ -489,7 +489,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     if retcode:
-        logger.debug(f'script finished without error')
+        logger.debug(f'g@script finished without error')
     else:
         logger.debug(f'error encountered during running')
 

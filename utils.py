@@ -2045,15 +2045,17 @@ def process_input(pwout_raw, fls):
         fn_out_bed_gz = f'{pwout_raw}/bed/{fn_lb}.sorted.bed{gz_suffix}'
 
         if os.path.exists(fn_out_bed) and os.path.getsize(fn_out_bed) > 10:
+            logger.debug(f'bed file already exist: {fn_out_bed}')
             res.append([fn_lb, fn_out_bed])
             continue
         elif gz_suffix and os.path.exists(fn_out_bed_gz) and os.path.getsize(fn_out_bed_gz) > 10:
             res.append([fn_lb, fn_out_bed_gz])
+            logger.debug(f'bed file already exist (gzip): {fn_out_bed_gz}')
             continue
         
         fn_for_check = re.sub(r'\.gz$', '', fn)
         if fn_for_check.endswith('.bam'):
-            logger.info(f'Converting {fn}')
+            logger.info(f'Converting bam to bed: {fn}')
             # still need to do the sorting, because for the following steps using bedtools coverage, the sorted bed will be more memory efficient
             # bedtools sort is faster than linux sort
             cmd = f"""bedtools bamtobed -i {fn} |bedtools sort -i - > {fn_out_bed}"""
@@ -2070,6 +2072,7 @@ def process_input(pwout_raw, fls):
                 fn_abs = os.path.realpath(fn)
                 fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
                 retcode = run_shell(f'ln -sf {fn_abs} {fn_dest}')
+                logger.debug(f'create symlink of {fn_abs}')
                 ires = [fn_lb, fn_dest]
             else:
                 logger.warning(f'input bed is not sorted, now sorting...')
@@ -2299,15 +2302,15 @@ def get_enhancer(other_region, fn_fantom, fn_association, fn_tss_tts, lcut=400, 
                 for i in range(e_start, e_end + 1):
                     enh_sites[e_chr].setdefault(i, set()).add(assoc_gn)
 
-    logger.debug(f'enh_sites keys = {sorted(enh_sites)}')
+        logger.debug(f'enh_sites chr keys = {sorted(enh_sites)}')
     
-    # the gene list value to string 
-    tmp = {}
-    for k1, v1 in enh_sites.items():
-        tmp[k1] = {}
-        for k2, v2 in v1.items():
-            tmp[k1][k2] = ','.join(sorted(v2))
-    enh_sites = tmp
+        # the gene list value to string 
+        tmp = {}
+        for k1, v1 in enh_sites.items():
+            tmp[k1] = {}
+            for k2, v2 in v1.items():
+                tmp[k1][k2] = ','.join(sorted(v2))
+        enh_sites = tmp
     
     # dump to pickle
     # logger.warning(f'modify here, dump fantom_sites pkl')

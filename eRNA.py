@@ -26,8 +26,10 @@ def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+', required=True)
+    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='*')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
+    ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
+
     ps.add_argument('-pwout', help="""work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
     ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], required=True)
     ps.add_argument('-gtf', help='Customized GTF file path, if not specified, will use the default one for the organism')
@@ -798,12 +800,13 @@ if __name__ == "__main__":
         os.makedirs(args.pw_bed, exist_ok=True)
 
     arg_list = parse_design_table(args)
+    retcode = 0
     for comp_str, iargs in arg_list:
         if comp_str:
             logger.info(f'now running {comp_str}')
         logger.debug(vars(iargs))
         try:
-            retcode = main(iargs)
+            retcode = main(iargs) or retcode
         except:
             e = traceback.format_exc()
             logger.error(f'Error found during running, please check the log file for more information: {fn_log}')

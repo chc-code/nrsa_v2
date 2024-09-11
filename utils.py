@@ -2827,6 +2827,9 @@ def parse_design_table(args):
     args.pw_bed = f'{pwout_raw}/bed'
     if not os.path.exists(args.pw_bed):
         os.makedirs(args.pw_bed, exist_ok=True)
+    
+    if args.gtf:
+        args.gtf = os.path.realpath(args.gtf)
 
     if args.in1 is not None:
         return [['', args]]

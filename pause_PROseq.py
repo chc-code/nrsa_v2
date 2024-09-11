@@ -6,9 +6,10 @@ def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
     ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
+    ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
+
     ps.add_argument('-pwout', '-output', help="""required, output/work directory""", required=True)
     ps.add_argument('-organism', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
 
@@ -393,7 +394,6 @@ def main(args):
     
     fno_prefix = 'longeRNA-' if analysis.longerna else ''
 
-    # modify here
     logger.info('Change_pp_gb')
     change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
     
@@ -436,18 +436,14 @@ def main(args):
     tmp = json.dumps(time_cost_util, indent=4)
     logger.info(tmp)
 
-        # modify here
-        # logger.info('debug exit')
-        # sys.exit(0)
-
-        # # get alternative isoforms
-        # logger.info('Getting alternative TSS isoforms')
-        # # get_alternative_isoform_across_conditions(fn_norm_count, out_dir, rep1, rep2)
-        # fn_pp_gb_count_norm = os.path.join(analysis.known_gene_dir, prefix + 'normalized_pp_gb.txt')
-        # if not os.path.exists(fn_pp_gb_count_norm):
-        #     logger.error(f"Normalized pp_gb file not found: {fn_pp_gb_count_norm}")
-        #     sys.exit(1)
-        # get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
+    # # get alternative isoforms
+    # logger.info('Getting alternative TSS isoforms')
+    # # get_alternative_isoform_across_conditions(fn_norm_count, out_dir, rep1, rep2)
+    # fn_pp_gb_count_norm = os.path.join(analysis.known_gene_dir, prefix + 'normalized_pp_gb.txt')
+    # if not os.path.exists(fn_pp_gb_count_norm):
+    #     logger.error(f"Normalized pp_gb file not found: {fn_pp_gb_count_norm}")
+    #     sys.exit(1)
+    # get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
 
 
 
@@ -479,16 +475,22 @@ if __name__ == "__main__":
         os.makedirs(args.pw_bed, exist_ok=True)
 
     arg_list = parse_design_table(args)
+    retcode = 0
     for comp_str, iargs in arg_list:
         if comp_str:
             logger.info(f'now running {comp_str}')
         logger.debug(vars(iargs))
         try:
-            main(iargs)
+            retcode = main(iargs) or retcode
         except:
             e = traceback.format_exc()
             logger.error(f'Error found during running, please check the log file for more information: {fn_log}')
             logger.debug(e)
             sys.exit(1)
 
-    logger.debug('script finished without any error')
+    if retcode:
+        logger.debug(f'script finished without error')
+    else:
+        logger.debug(f'error encountered during running')
+
+    sys.exit(retcode)

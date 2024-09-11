@@ -865,6 +865,8 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
     """
     from matplotlib import pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.backends.backend_pdf import PdfPages
+
     fls_case = fls_case or []
     
     ppchange = {}

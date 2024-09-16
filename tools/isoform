@@ -5,13 +5,93 @@ get the alternative isoform of a gene for different conditions regarding the pp 
 
 import os, sys, re
 import pandas as pd
+import fisher
+import statsmodels.stats.contingency_tables as contingency_tables
+from statsmodels.stats.multitest import multipletests
 
-def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
+import sys
+def getlogger(fn_log=None, logger_name=None, nocolor=False):
+    import logging
+    logger_name = logger_name or "main"
+    
+    try:
+        logger = logging.getLogger(logger_name)
+    except:
+        logger = logging.getLogger('terminal')
+
+    class CustomFormatter(logging.Formatter):
+    
+        def __init__(self, nocolor=False):
+            self.nocolor = nocolor
+        colors = {
+            'black': '\u001b[30;1m',
+            'red': '\u001b[31;1m',
+            'r': '\u001b[31;1m',
+            'bold_red': '\u001b[31;1m',
+            'rb': '\u001b[31;1m',
+            'green': '\u001b[32;1m',
+            'g': '\u001b[32;1m',
+            'gb': '\u001b[32;1m',
+            'yellow': '\u001b[33;1m',
+            'blue': '\u001b[34;1m',
+            'b': '\u001b[34;1m',
+            'purple': '\u001b[35;1m',
+            'p': '\u001b[35;1m',
+            'grey': '\u001b[38;1m',
+        }
+        FORMATS = {
+            logging.WARNING: colors['purple'],
+            logging.ERROR: colors['bold_red'],
+            logging.CRITICAL: colors['bold_red'],
+        }
+    
+        def format(self, record):
+            format_str = "%(asctime)s  %(levelname)-6s %(funcName)-20s  line: %(lineno)-5s  %(message)s"
+            reset = "\u001b[0m"
+            log_fmt = None
+            
+            record.msg = str(record.msg)
+            if self.nocolor:
+                pass
+            elif '@' in record.msg[:10]:
+                try:
+                    icolor, tmp = record.msg.split('@', 1)
+                    log_fmt = self.colors.get(icolor)
+                    if log_fmt:
+                        record.msg = tmp
+                except:
+                    raise
+                    pass
+            else:
+                log_fmt = self.FORMATS.get(record.levelno)
+            if log_fmt:
+                record.msg = log_fmt + record.msg + reset
+            formatter = logging.Formatter(format_str, datefmt='%Y-%m-%d %H:%M:%S')
+            return formatter.format(record)
+    
+    logger.setLevel('DEBUG')
+    handler_names = {_.name for _ in logger.handlers}
+    if 'console' not in handler_names:
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(CustomFormatter(nocolor=nocolor))
+        console.setLevel('INFO')
+        console.name = 'console'
+        logger.addHandler(console)
+
+    if fn_log and 'file' not in handler_names:
+        fh_file = logging.FileHandler(fn_log, mode='w', encoding='utf8')
+        fh_file.setLevel('DEBUG')
+        fh_file.setFormatter(CustomFormatter())
+        fh_file.name = 'file'
+        logger.addHandler(fh_file)
+    return logger
+logger = getlogger()
+
+
+def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     """
     get the alternative isoform across conditions
-    1. get the genes with multiple isoforms
-    2. for transcript, get the ppc sum of conditon1 and condition2,  compare the two ppc_sum. if the direction is different between 2 isoforms, then it is alternative isoform. e.g. in isoform1, ppc_sum_conditoin1 > ppc_sum_condition2, in isoform2, ppc_sum_conditoin1 < ppc_sum_condition2
-    fn = count_pp_gb.txt
+    fn = count_pp_gb.txt / count_tts.txt
     """
     
     if 'normalized' in fn:
@@ -19,52 +99,96 @@ def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
     else:
         norm_flag = ''
     data = pd.read_csv(fn, sep='\t')
-    #  columns = "Transcript\tGene\tchr\tstart\tend\tstrand"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
+    if rep2 < 1:
+        logger.error(f'case samples must be available to find alternative isoforms')
+        return 1
     # only keep the genes with multiple isoforms with different TSS
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
 
     cols_orig = list(data.columns)
-    cols_ppc_all = [i for i in cols_orig if i.startswith('ppc_')]
+    if 'count_pp_gb' in fn:
+        col_prefix = 'ppc_'
+        out_prefix = 'TSS_'
+    elif 'count_tts' in fn:
+        col_prefix = 'tts_'
+        out_prefix = 'TTS_'
+    else:
+        logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
+        return 1
+    sam_list = [i for i in cols_orig if i.startswith(col_prefix)]
 
-    sam_list = [re.sub('^ppc_', '', _) for _ in cols_ppc_all]
     sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
     
-    cols_ppc1 = [f'ppc_{sam}' for sam in sam1]
-    cols_ppc2 = [f'ppc_{sam}' for sam in sam2]
+    data['ctrl_sum'] = data[sam1].sum(axis=1)
+    data['case_sum'] = data[sam2].sum(axis=1)
     
-    data['ppc_sum1'] = data[cols_ppc1].sum(axis=1)
-    data['ppc_sum2'] = data[cols_ppc2].sum(axis=1)
-    # exclude transcripts with same ppc_sum1 and ppc_sum2
-    data = data.loc[data['ppc_sum1'] != data['ppc_sum2']]
-    
-    # exclude transcripts with ppc_sum1 and ppc_sum2 are both < 5
-    min_ppc_sum = 5
-    data = data.loc[(data['ppc_sum1'] >= min_ppc_sum) | (data['ppc_sum2'] >= min_ppc_sum)]
+    # exclude transcripts with ctrl_sum and case_sum are both < 5
+    min_sum = 50
+    data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
     
     # keep only genes still have multiple isoforms
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
 
-    data = data.sort_values(['Gene', 'chr', 'start'])
-
-    # for the comparison column, the value can be 1, 0 or -1
-    # if ppc_sum1 > ppc_sum2, then 1, if ppc_sum1 < ppc_sum2, then -1, if ppc_sum1 == ppc_sum2, then 0
-    data['comparison'] = data['ppc_sum1'].sub(data['ppc_sum2']).apply(lambda x: 1 if x > 0 else -1)
-    # per gene, keep only the genes with different comparison values
-    data = data.groupby('Gene').filter(lambda x: x['comparison'].nunique() > 1)
+    data = data.sort_values(['chr', 'Gene', 'start'])
+    data['ctrl_mean'] = data['ctrl_sum'] / rep1
+    data['case_mean'] = data['case_sum'] / rep2
     
-    # get the log2FC of ppc_sum1 and ppc_sum2, log2(ppc_sum2/ppc_sum1)
-    ratio = data['ppc_sum2'] / (data['ppc_sum1'].replace(0, np.nan))
-    data['log2FC'] = np.log2(ratio.replace(0, np.nan))
-    
-    # drop comparison column
-    data = data.drop('comparison', axis=1)
-    
-    print('dumping result')
-    data.to_excel(f'{out_dir}/alternative_isoform{norm_flag}.xlsx', index=False)
+    def compare_transcripts(gn, ts1, ts2, ctrl_max, case_max):
+        ts_id1, ts_id2 = ts1.Transcript, ts2.Transcript
+        tss_pos_ts1, tss_pos_ts2 = [ts1.start, ts2.start] if ts1.strand == '+' else [ts1.end, ts2.end]
+        ratio_ctrl = ts1['ctrl_mean'] / ts2['ctrl_mean']
+        ratio_case = ts1['case_mean'] / ts2['case_mean']
+        ts1_mean_ctrl, ts1_mean_case = ts1['ctrl_mean'], ts1['case_mean']
+        ts2_mean_ctrl, ts2_mean_case = ts2['ctrl_mean'], ts2['case_mean']
+        
+        tables = []
+        for isam1 in sam1:
+            for isam2 in sam2:
+                tables.append([[ts1[isam1], ts1[isam2]], [ts2[isam1], ts2[isam2]]])
+        
+        if len(tables) == 1:
+            vals = tables[0][0] + tables[0][1]
+            pvalue = fisher.pvalue(*vals).two_tail
+            odds_ratio = ratio_ctrl / ratio_case
+        else:
+            # cmhtest
+            tables = np.array(tables).T
+            cmt = contingency_tables.StratifiedTable(tables=tables)
+            odds_ratio = cmt.oddsratio_pooled
+            test_res = cmt.test_null_odds(correction=True)
+            pvalue = test_res.pvalue
+        return [gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue]
 
-
+    def parse_by_gene(g):
+        """
+        input is a groupby obj, with a single gene
+        each row in the output is a transcript comparison.
+        e.g. if there are 4 transcripts, the output will have 4*3/2 = 6 combinations
+        """
+        ts_list = list(g['Transcript'])
+        n_ts = len(ts_list)
+        res = []
+        gn = g.name
+        ctrl_max = g.ctrl_mean.max()
+        case_max = g.case_mean.max()
+        for i in range(n_ts - 1):
+            ts1 = g.iloc[i]
+            for j in range(i + 1, n_ts):
+                ts2 = g.iloc[j]
+                res.append(compare_transcripts(gn, ts1, ts2, ctrl_max, case_max))
+        return pd.DataFrame(res, columns=['Gene', 'Transcript1', 'Transcript2', 'TSS_transcript1', 'TSS_transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue'])
+    
+    df_isoform = data.groupby('Gene').apply(parse_by_gene, include_groups=False).reset_index(drop=True)
+    df_isoform['FDR'] = multipletests(df_isoform['pvalue'], method='fdr_bh')[1]
+    sig = df_isoform.loc[df_isoform.pvalue < 0.05]
+    
+    fn_isoform = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.tsv'
+    fn_sig = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.sig.tsv'
+    df_isoform.to_csv(fn_isoform, index=False, na_rep='NA')
+    sig.to_csv(fn_sig, index=False, na_rep='NA')
+    
 
 if __name__ == "__main__":
     import argparse as arg

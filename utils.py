@@ -381,7 +381,7 @@ def get_peak_method2(count_per_base, count_bin, chr_, strand_idx, s, e, bin_size
         bin_list = range(bin_start + 1, bin_end + 1)
     return sum([count_per_base[chr_].get(i, [0, 0])[strand_idx] for i in points]) + sum([count_bin[chr_].get(i, [0, 0])[strand_idx] for i in bin_list])
 
-def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq, window_size, step_size, bin_size, prev_pp_peak):
+def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, tts_start, tts_end, gb_len_mappable, gene_seq, window_size, step_size, bin_size, prev_pp_peak):
     # {'chr': '5', 'strand': '-', 'gene_name': 'PFDN1', 'start': 139682626, 'end': 139682689}
     # pro_up = pro_down = 500
     # gb_start_pos = 1000 # count the gb density from 1000bp downstream of the gene start site
@@ -394,6 +394,9 @@ def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp
         gbd = gbc / gb_len_mappable
     # gbc = gbd = 0
     # k_pp_region = f'{chr_}{strand}:{pp_start}'
+    
+    # get tts_count
+    tts_ct = get_peak_method2(count_per_base, count_bin, chr_, strand_idx, tts_start, tts_end, bin_size=bin_size)
     
     
     # get all the sites count in pp region
@@ -418,7 +421,7 @@ def get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp
     # prev_pp_peak[k_pp_region] = pp_res
     # gbc = gbd = 0
     # return 0, 0, {'ppc': 0, 'ppd': 0, 'mappable_sites': 50, 'summit_pos': 0, 'summit_count': 0}
-    return gbc, gbd,  pp_res
+    return gbc, gbd,  pp_res, tts_ct
 
 
 def draw_box_plot(n_gene_cols, pwout, out_name, n_rep1, n_rep2=None, gn_list=None):
@@ -1440,64 +1443,6 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     return size_factors, sam_list
     
 
-def get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2):
-    """
-    get the alternative isoform across conditions
-    1. get the genes with multiple isoforms
-    2. for transcript, get the ppc sum of conditon1 and condition2,  compare the two ppc_sum. if the direction is different between 2 isoforms, then it is alternative isoform. e.g. in isoform1, ppc_sum_conditoin1 > ppc_sum_condition2, in isoform2, ppc_sum_conditoin1 < ppc_sum_condition2
-    fn = count_pp_gb.txt / normalized_pp_gb.txt
-    """
-    
-    if 'normalized' in fn:
-        norm_flag = '.norm'
-    else:
-        norm_flag = ''
-    data = pd.read_csv(fn, sep='\t')
-    #  columns = "Transcript\tGene\tchr\tstart\tend\tstrand"  + ppc_[sam_list], gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2 ....
-    # only keep the genes with multiple isoforms with different TSS
-    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
-    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
-
-    cols_orig = list(data.columns)
-    cols_ppc_all = [i for i in cols_orig if i.startswith('ppc_')]
-
-    sam_list = [re.sub('^ppc_', '', _) for _ in cols_ppc_all]
-    sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
-    
-    cols_ppc1 = [f'ppc_{sam}' for sam in sam1]
-    cols_ppc2 = [f'ppc_{sam}' for sam in sam2]
-    
-    data['ppc_sum1'] = data[cols_ppc1].sum(axis=1)
-    data['ppc_sum2'] = data[cols_ppc2].sum(axis=1)
-    # exclude transcripts with same ppc_sum1 and ppc_sum2
-    data = data.loc[data['ppc_sum1'] != data['ppc_sum2']]
-    
-    # exclude transcripts with ppc_sum1 and ppc_sum2 are both < 5
-    min_ppc_sum = 5
-    data = data.loc[(data['ppc_sum1'] >= min_ppc_sum) | (data['ppc_sum2'] >= min_ppc_sum)]
-    
-    # keep only genes still have multiple isoforms
-    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
-    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
-
-    data = data.sort_values(['Gene', 'chr', 'start'])
-
-    # for the comparison column, the value can be 1, 0 or -1
-    # if ppc_sum1 > ppc_sum2, then 1, if ppc_sum1 < ppc_sum2, then -1, if ppc_sum1 == ppc_sum2, then 0
-    data['comparison'] = data['ppc_sum1'].sub(data['ppc_sum2']).apply(lambda x: 1 if x > 0 else -1)
-    # per gene, keep only the genes with different comparison values
-    data = data.groupby('Gene').filter(lambda x: x['comparison'].nunique() > 1)
-    
-    # get the log2FC of ppc_sum1 and ppc_sum2, log2(ppc_sum2/ppc_sum1)
-    ratio = data['ppc_sum2'] / (data['ppc_sum1'].replace(0, np.nan))
-    data['log2FC'] = np.log2(ratio.replace(0, np.nan))
-    
-    # drop comparison column
-    data = data.drop('comparison', axis=1)
-    
-    print('dumping result')
-    data.to_csv(f'{out_dir}/known_gene/alternative_isoform{norm_flag}.txt', index=False, sep='\t', na_rep='NA')
-
 def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0, islongerna=False):
     """
     adapted from Rscript change_pp_gb.R
@@ -1714,7 +1659,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, fac
 
 
     
-def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
+def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance, tts_padding):
     strand = gene_info['strand']
     gene_raw_s, gene_raw_e = gene_info['start'], gene_info['end']
     if strand == '+':
@@ -1722,13 +1667,19 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
         pp_end = gene_raw_s + pro_down - 1
         gb_start = gene_raw_s + gb_down_distance
         gb_end = gene_raw_e
+        tts = gene_raw_e
         strand_idx = 0
+        tts_start = gene_raw_e - tts_padding
+        tts_end = gene_raw_e + tts_padding
     else:
         pp_start = gene_raw_e - (pro_down - 1)
         pp_end = gene_raw_e + pro_up
         gb_start = gene_raw_s
+        tts = gene_raw_s
         gb_end = gene_raw_e - gb_down_distance
         strand_idx = 1
+        tts_start = gene_raw_s - tts_padding
+        tts_end = gene_raw_s + tts_padding
     
     # modify here
     # skip the get gene_seq step
@@ -1745,8 +1696,8 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance):
     gb_len_mappable = gb_end - gb_start + 1 - gb_seq_N
 
     new_info = dict(zip(
-        ['pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq'], 
-        [ pp_start,   pp_end,   gb_start ,  gb_end ,  strand_idx ,  gb_len_mappable,   gene_seq ]
+        ['pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq', 'tts_start', 'tts_end', 'tts'], 
+        [ pp_start,   pp_end,   gb_start ,  gb_end ,  strand_idx ,  gb_len_mappable,   gene_seq, tts_start, tts_end, tts]
         ))
     gene_info.update(new_info)
     return gene_info
@@ -2717,10 +2668,11 @@ class Analysis:
             'step': args.step, # define the step size (bp, default: 5)
             'normalize_factor1': args.f1, # normalization factors for samples of condition1
             'normalize_factor2': args.f2, # normalization factors for samples of condition2
+            'tts_padding': args.tts_padding
         }
         
 
-def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=False):
+def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=False, save_tts_count=True):
     
     invalid_chr_transcript = 0
     bin_size = analysis.bin_size
@@ -2734,13 +2686,14 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     section_size = 1000 # print log every 1000 loops
 
     # add more values to gtf_info
-    logger.debug(f'adding more values to gtf_info')
     s_before_loop = time.time()
     s = s_before_loop
     ts_list = list(gtf_info)
 
     pp_str = {ts: [] for ts in ts_list}
     gb_str = {ts: [] for ts in ts_list}
+    tts_str = {ts: [str(gtf_info[ts][_]) for _ in ['chr', 'strand', 'tts']] for ts in ts_list}
+    
     
     # seq_pool = {} # key = transcript_id
     # count_pool = {}
@@ -2766,6 +2719,8 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
                     del pp_str[ts]
                 if ts in gb_str:
                     del gb_str[ts]
+                if ts in tts_str:
+                    del tts_str[ts]
                 chr_excluded.setdefault(ts_chr, 0)
                 chr_excluded[ts_chr] += 1
         if ts_excluded > 0:
@@ -2776,7 +2731,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
         fh_bed_peaks = analysis.out_fls['bed_peaks'][fn_lb]['fh']
         for transcript_id in ts_list_copy:
             gene_info = gtf_info[transcript_id]
-            chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq']]
+            chr_, strand, gene_raw_s, pp_start, pp_end, gb_start, gb_end, strand_idx, gb_len_mappable, gene_seq, tts_start, tts_end = [gene_info[_] for _ in ['chr', 'strand', 'start', 'pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq', 'tts_start', 'tts_end']]
 
             n += 1
             if n % section_size == 0:
@@ -2789,10 +2744,11 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
 
             # pp_res: {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
             s = time.time()
-            gbc, gbd, pp_res = get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, gb_len_mappable, gene_seq,  window_size, step_size, bin_size, prev_peak)
+            gbc, gbd, pp_res, tts_ct = get_peak(count_per_base, count_bin, chr_, strand, gene_raw_s, strand_idx, pp_start, pp_end, gb_start, gb_end, tts_start, tts_end, gb_len_mappable, gene_seq,  window_size, step_size, bin_size, prev_peak)
 
             pp_str[transcript_id].append(str(pp_res['ppc']))
             gb_str[transcript_id] += [str(gbc), str(gbd)]
+            tts_str[transcript_id].append(str(tts_ct))
             
             # write to file
             # row = ['Transcript', 'Gene', 'tssCount', 'tssLength', 'tssRatio', 'tssSummit_pos', 'genebodyCount', 'genebodyLength', 'genebodyRatio', 'tss_vs_genebody_ratio']
@@ -2815,6 +2771,19 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     if invalid_chr_transcript:
         logger.warning(f"Number of genes with invalid chromosome = {invalid_chr_transcript}")
 
+
+    # save the tts_count
+    if save_tts_count:
+        fn_tts_count = f'{pwout}/intermediate/count_tts.txt'
+        tts_file_header = ['Transcript', 'Gene', 'chr', 'strand', 'TTS'] + ['tts_ct_' + _[0] for _ in fls]
+        with open(fn_tts_count, 'w') as o:
+            print('\t'.join(tts_file_header), file=o)
+            for ts in ts_list:
+                gn = gtf_info[ts]['gene_name']
+                if ts in tts_str:
+                    print('\t'.join([ts, gn] + tts_str[ts]), file=o)
+        logger.debug(f'TTS count file saved: {fn_tts_count}')
+    
     return pp_str, gb_str
 
 def get_new_args(args, update_dict):
@@ -2918,6 +2887,7 @@ def pause_longeRNA_main(args):
     }
     pwout = args.pwout
     pw_bed = args.pw_bed
+    args.tts_padding = 1000
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
     for attr in exist:
@@ -2970,7 +2940,7 @@ def pause_longeRNA_main(args):
     
     logger.debug(f'nf = {nf_d}')
 
-    pro_up, pro_down, gb_down_distance, min_gene_len = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len']]
+    pro_up, pro_down, gb_down_distance, min_gene_len, tts_padding = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len', 'tts_padding']]
 
     # process the GTF file
     fn_gtf = analysis.ref['gtf']
@@ -2988,7 +2958,7 @@ def pause_longeRNA_main(args):
             chr_, s, e, strand = i[:-1].split('\t')
             ts = f'{chr_}:{s}-{e}:{strand}'
             ires = {'chr': chr_, 'strand': strand, 'start': int(s), 'end': int(e)}
-            gtf_info[ts] = add_value_to_gtf(ires, pro_up, pro_down, gb_down_distance) 
+            gtf_info[ts] = add_value_to_gtf(ires, pro_up, pro_down, gb_down_distance, tts_padding) 
     
     # prepare fasta file
     fn_fa = analysis.ref['fa']
@@ -3012,7 +2982,7 @@ def pause_longeRNA_main(args):
     else:
         reuse_pre_count = True # modify here
         logger.info(f'Getting pp_gb count')
-        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
+        pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count, save_tts_count=False)
         close_fh()
     
         # count_pp_gb
@@ -3029,7 +2999,7 @@ def pause_longeRNA_main(args):
         with open(fn_count_pp_gb, 'w') as o:
             print('\t'.join(header), file=o)
             for transcript_id in pp_str:
-                gene_info = gtf_info[transcript_id]
+                # gene_info = gtf_info[transcript_id]
                 row = [transcript_id]
                 row += pp_str[transcript_id] + gb_str[transcript_id]
                 print('\t'.join(row), file=o)

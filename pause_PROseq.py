@@ -20,6 +20,7 @@ def getargs():
     ps.add_argument('-up', '-pp_up', help="""define the upstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-down', '-pp_down', help="""define the downstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-gb', '-gb_start', help="""define the start of gene body density calculation (bp, default: 1000)""", type=int, default=1000)
+    ps.add_argument('-tts_padding', help="""define the distance upstream and downstream length around TTS to get the count (bp, default: 1000)""", default=1000, type=int)
     ps.add_argument('-min_gene_len', help="""define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored""", type=int, default=1000)
     ps.add_argument('-window', '-window_size', help="""define the window size (bp, default: 50)""", type=int, default=50)
     ps.add_argument('-step', '-step_size', help="""define the step size (bp, default: 5)""", type=int, default=5)
@@ -45,7 +46,7 @@ import json
 import traceback
 import gc
 
-from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_alternative_isoform_across_conditions, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table
+from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table
 
 from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
@@ -210,6 +211,7 @@ def main(args):
         'step': 5,
         'bench': False,
         'ignore': False,
+        'tts_padding': 1000,
     }
     pw_bed = args.pw_bed
     missing = required_attrs - set(defined_attrs)
@@ -244,7 +246,7 @@ def main(args):
     factor2 = analysis.config['normalize_factor2']
     factor_flag = 0 if factor1 is None else 1
 
-    pro_up, pro_down, gb_down_distance, min_gene_len = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len']]
+    pro_up, pro_down, gb_down_distance, min_gene_len, tts_padding = [analysis.config[_] for _ in ['pro_up', 'pro_down', 'gb_start', 'min_gene_len', 'tts_padding']]
 
 
     # process the GTF file
@@ -294,7 +296,7 @@ def main(args):
         #     continue
         if v['end'] - v['start'] + 1 > min_gene_len: # not include if len is 1000 (min_gene_len)
             merged_transcripts += k.count(';')
-            gtf_info_new[k] = add_value_to_gtf(v, pro_up, pro_down, gb_down_distance) 
+            gtf_info_new[k] = add_value_to_gtf(v, pro_up, pro_down, gb_down_distance, tts_padding) 
             if benchmode:
                 ct += 1
                 if ct == bench_max_gene:

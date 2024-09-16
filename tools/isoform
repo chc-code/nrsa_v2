@@ -8,7 +8,7 @@ import pandas as pd
 import fisher
 import statsmodels.stats.contingency_tables as contingency_tables
 from statsmodels.stats.multitest import multipletests
-
+import numpy as np
 import sys
 def getlogger(fn_log=None, logger_name=None, nocolor=False):
     import logging
@@ -99,24 +99,35 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     else:
         norm_flag = ''
     data = pd.read_csv(fn, sep='\t')
+    if 'count_pp_gb' in fn:
+        col_prefix = 'ppc_'
+        out_prefix = 'TSS_'
+        pos_in_use = 'TSS'
+        data[pos_in_use] = 0
+        data.loc[data.strand == '+', pos_in_use] = data.loc[data.strand == '+', 'start']
+        data.loc[data.strand == '-', pos_in_use] = data.loc[data.strand == '-', 'end']
+        
+    elif 'count_tts' in fn:
+        col_prefix = 'tts_'
+        out_prefix = 'TTS_'
+        pos_in_use = 'TTS'
+    else:
+        logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
+        return 1
+
     if rep2 < 1:
         logger.error(f'case samples must be available to find alternative isoforms')
         return 1
     # only keep the genes with multiple isoforms with different TSS
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
-    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
+    data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
 
     cols_orig = list(data.columns)
-    if 'count_pp_gb' in fn:
-        col_prefix = 'ppc_'
-        out_prefix = 'TSS_'
-    elif 'count_tts' in fn:
-        col_prefix = 'tts_'
-        out_prefix = 'TTS_'
-    else:
-        logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
-        return 1
     sam_list = [i for i in cols_orig if i.startswith(col_prefix)]
+    if len(sam_list) == 0 and pos_in_use == 'TTS':
+        tmp = list(data.columns)
+        idx_tts = tmp.index('TTS')
+        sam_list = tmp[idx_tts+1:]
 
     sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
     
@@ -124,22 +135,23 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     data['case_sum'] = data[sam2].sum(axis=1)
     
     # exclude transcripts with ctrl_sum and case_sum are both < 5
+    # if pos_in_use == 'TSS':
     min_sum = 50
     data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
-    
     # keep only genes still have multiple isoforms
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
-    data = data.groupby('Gene').filter(lambda x: x['start'].nunique() > 1) # 333 rows
+    data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
+    logger.info(data.shape)
 
-    data = data.sort_values(['chr', 'Gene', 'start'])
+    data = data.sort_values(['chr', 'Gene', pos_in_use])
     data['ctrl_mean'] = data['ctrl_sum'] / rep1
     data['case_mean'] = data['case_sum'] / rep2
     
     def compare_transcripts(gn, ts1, ts2, ctrl_max, case_max):
         ts_id1, ts_id2 = ts1.Transcript, ts2.Transcript
-        tss_pos_ts1, tss_pos_ts2 = [ts1.start, ts2.start] if ts1.strand == '+' else [ts1.end, ts2.end]
-        ratio_ctrl = ts1['ctrl_mean'] / ts2['ctrl_mean']
-        ratio_case = ts1['case_mean'] / ts2['case_mean']
+        tss_pos_ts1, tss_pos_ts2 = [ts1[pos_in_use], ts2[pos_in_use]]
+        ratio_ctrl = ts1['ctrl_mean'] / ts2['ctrl_mean'] if ts2['ctrl_mean'] > 0 else np.nan
+        ratio_case = ts1['case_mean'] / ts2['case_mean'] if ts2['case_mean'] > 0 else np.nan
         ts1_mean_ctrl, ts1_mean_case = ts1['ctrl_mean'], ts1['case_mean']
         ts2_mean_ctrl, ts2_mean_case = ts2['ctrl_mean'], ts2['case_mean']
         
@@ -180,14 +192,17 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
                 res.append(compare_transcripts(gn, ts1, ts2, ctrl_max, case_max))
         return pd.DataFrame(res, columns=['Gene', 'Transcript1', 'Transcript2', 'TSS_transcript1', 'TSS_transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue'])
     
-    df_isoform = data.groupby('Gene').apply(parse_by_gene, include_groups=False).reset_index(drop=True)
+    
+    
+    df_isoform = data.groupby('Gene').apply(parse_by_gene).reset_index(drop=True)
+    
     df_isoform['FDR'] = multipletests(df_isoform['pvalue'], method='fdr_bh')[1]
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
     fn_isoform = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.tsv'
     fn_sig = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.sig.tsv'
-    df_isoform.to_csv(fn_isoform, index=False, na_rep='NA')
-    sig.to_csv(fn_sig, index=False, na_rep='NA')
+    df_isoform.to_csv(fn_isoform, index=False, na_rep='NA', sep='\t')
+    sig.to_csv(fn_sig, index=False, na_rep='NA', sep='\t')
     
 
 if __name__ == "__main__":

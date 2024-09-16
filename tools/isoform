@@ -190,7 +190,7 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
             for j in range(i + 1, n_ts):
                 ts2 = g.iloc[j]
                 res.append(compare_transcripts(gn, ts1, ts2, ctrl_max, case_max))
-        return pd.DataFrame(res, columns=['Gene', 'Transcript1', 'Transcript2', 'TSS_transcript1', 'TSS_transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue'])
+        return pd.DataFrame(res, columns=['Gene', 'Transcript1', 'Transcript2', f'{out_prefix}transcript1', f'{out_prefix}transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue'])
     
     
     

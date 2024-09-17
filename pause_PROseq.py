@@ -46,7 +46,7 @@ import json
 import traceback
 import gc
 
-from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table
+from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table, get_alternative_isoform_across_conditions
 
 from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
@@ -396,8 +396,13 @@ def main(args):
     
     fno_prefix = 'longeRNA-' if analysis.longerna else ''
 
-    logger.info('Change_pp_gb')
-    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
+    fno_ppchange = f'{pwout}/known_gene/pp_change.txt'
+    fno_gbchange = f'{pwout}/known_gene/gb_change.txt'
+    if not (os.path.exists(fno_ppchange) and os.path.exists(fno_gbchange) and demo):
+        logger.info('Change_pp_gb')
+        change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
+    else:
+        logger.debug(f'skip change_pp_gb due to demo mode')
     
     logger.debug('Dump pindex.txt')
     header_extra = []
@@ -432,22 +437,24 @@ def main(args):
         # heatmap
         logger.info(f'plotting heatmap for pp_change')
         # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
-
-        draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
+        fno = f'{pwout}/known_gene/heatmap.pdf'
+        if not (os.path.exists(fno) and demo):
+            draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
+        else:
+            logger.debug(f'skip plot heatmap due to demo mode')
 
     tmp = json.dumps(time_cost_util, indent=4)
     logger.info(tmp)
 
     # # get alternative isoforms
-    # logger.info('Getting alternative TSS isoforms')
-    # # get_alternative_isoform_across_conditions(fn_norm_count, out_dir, rep1, rep2)
-    # fn_pp_gb_count_norm = os.path.join(analysis.known_gene_dir, prefix + 'normalized_pp_gb.txt')
-    # if not os.path.exists(fn_pp_gb_count_norm):
-    #     logger.error(f"Normalized pp_gb file not found: {fn_pp_gb_count_norm}")
-    #     sys.exit(1)
-    # get_alternative_isoform_across_conditions(fn_pp_gb_count_norm, analysis.out_dir, rep1, rep2)
-
-
+    logger.info('Getting alternative TSS isoforms')
+     
+    fn_count_pp_gb_norm = f'{pwout}/known_gene/normalized_pp_gb.txt'
+    fn_count_tts_norm = f'{pwout}/intermediate/count_tts.filtered.txt'
+    get_alternative_isoform_across_conditions(fn_count_pp_gb_norm, pwout, rep1, rep2)
+    get_alternative_isoform_across_conditions(fn_count_tts_norm, pwout, rep1, rep2)
+    
+    
 
     
 if __name__ == "__main__":

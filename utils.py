@@ -1696,8 +1696,8 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance, tts_padding)
     gb_len_mappable = gb_end - gb_start + 1 - gb_seq_N
 
     new_info = dict(zip(
-        ['pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq', 'tts_start', 'tts_end', 'tts'], 
-        [ pp_start,   pp_end,   gb_start ,  gb_end ,  strand_idx ,  gb_len_mappable,   gene_seq, tts_start, tts_end, tts]
+        ['pp_start', 'pp_end', 'gb_start', 'gb_end', 'strand_idx', 'gb_len_mappable', 'gene_seq', 'tts_start', 'tts_end'], 
+        [ pp_start,   pp_end,   gb_start ,  gb_end ,  strand_idx ,  gb_len_mappable,   gene_seq, tts_start, tts_end]
         ))
     gene_info.update(new_info)
     return gene_info
@@ -1720,8 +1720,9 @@ def process_gtf(fn_gtf, pwout):
     """
 
     err = {'no_transcript_id': 0, 'no_gene_name': 0, 'invalid_line_format': 0, 'invalid_strand': 0}
-    fn_gtf = os.path.abspath(fn_gtf)
+    fn_gtf = os.path.realpath(fn_gtf)
     fn_gtf_lb = os.path.basename(fn_gtf).replace('.gz', '').replace('.gtf', '')
+    # logger.warning(fn_gtf)
 
     fn_tss = f'{pwout}/intermediate/{fn_gtf_lb}.tss.txt'
     fn_tss_tts = f'{pwout}/intermediate/{fn_gtf_lb}.tss_tts.txt'
@@ -1748,6 +1749,7 @@ def process_gtf(fn_gtf, pwout):
             gtf_info = pickle.load(f)
         if not os.path.exists(fn_tss) or not os.path.exists(fn_tss_tts):
             build_tss(gtf_info, fn_tss, fn_tss_tts)
+
         return gtf_info, fn_tss, fn_tss_tts, err
     
     gtf_col_idx = {
@@ -1807,15 +1809,14 @@ def process_gtf(fn_gtf, pwout):
                 continue # skip the line if the chr_ contains underscore (e.g. chr1_KI270706v1_random)
 
             # {'chr': '', 'strand': '', 'gene_name': '', 'start': 0, 'end': 0}
-            res_raw.setdefault(gene_name, {}).setdefault(transcript_id, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
+            ires_exon = {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end}
+            ires = res_raw.setdefault(gene_name, {}).setdefault(transcript_id, ires_exon)
             
-            ires = res_raw[gene_name][transcript_id]
             
             # deal with the case when the same transcript-ID with different chr or strand
             if chr_ != ires['chr'] or strand != ires['strand']:
                 transcript_id_new = f'{transcript_id}_{chr_}_{strand}'
-                res_raw.setdefault(gene_name, {}).setdefault(transcript_id_new, {'chr': chr_, 'strand': strand, 'gene_name': gene_name, 'start': start, 'end': end})
-                ires = res_raw[gene_name][transcript_id_new]
+                ires = res_raw.setdefault(gene_name, {}).setdefault(transcript_id_new, ires_exon)
 
             if start < ires['start']:
                 ires['start'] = start
@@ -1830,7 +1831,10 @@ def process_gtf(fn_gtf, pwout):
     for gn, v1 in res_raw.items():
         tmp = {}  # key = unique_id
         for transcript_id, v2 in v1.items():
-            unique_id = f'{v2["chr"]}_{v2["start"]}_{v2["end"]}_{v2["strand"]}'
+            start, end, strand = v2['start'], v2['end'], v2['strand']
+            unique_id = f'{v2["chr"]}_{start}_{end}_{strand}'
+            v2['tss'] = start if strand == '+' else end
+            v2['tts'] = end if strand == '+' else start
             tmp.setdefault(unique_id, []).append(transcript_id) # these transcripts have the same start and end position
             meta['initial_n_transcripts'] += 1
         for transcript_list in tmp.values():
@@ -1854,6 +1858,11 @@ def process_gtf(fn_gtf, pwout):
     err_total = sum(err.values())
     if err_total:
         logger.info(f'error in parsing gtf file: {err}')
+    
+    # logger.warning('modify here')
+    # logger.warning(res['NM_000015.2'])
+    # sys.exit(1)
+
     return res, fn_tss, fn_tss_tts, err
 
 
@@ -2701,9 +2710,10 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     # genes_with_N = set()
     n_ts_init = len(ts_list)
     for fn_lb, fn_bed in fls:
+        logger.info(f'processing {fn_lb}')
+
         count_per_base, count_bin = pre_count_for_bed(fn_lb, fn_bed, pw_bed, bin_size, reuse=reuse_pre_count)
         prev_peak = {}
-        
         # exclude the ts that the chr not in the bed files
         valid_chr = set(count_per_base)
         chr_excluded = {}
@@ -2739,7 +2749,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
                 prev_time, prev_count = prev
                 time_gap = now - prev_time
                 speed = time_gap * 1000  / (n - prev_count)
-                logger.info(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
+                logger.debug(f'{n/1000}k - get_mapped_reads_count count, time_gap={time_gap:.2}s, speed={speed:.3f}ms')
                 prev = [now, n]
 
             # pp_res: {'ppc': prev[0], 'ppd': ppd, 'mappable_sites': mappable_sites, 'summit_pos': summit_pos_str, 'summit_count': summit_count}
@@ -2773,16 +2783,60 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
 
 
     # save the tts_count
+
+
+
     if save_tts_count:
-        fn_tts_count = f'{pwout}/intermediate/count_tts.txt'
-        tts_file_header = ['Transcript', 'Gene', 'chr', 'strand', 'TTS'] + ['tts_ct_' + _[0] for _ in fls]
-        with open(fn_tts_count, 'w') as o:
+        fn_tts_count = f'{pwout}/intermediate/count_tts.raw.txt'
+        fn_tts_count_filtered = f'{pwout}/intermediate/count_tts.filtered.txt'
+        tts_file_header = ['Transcript', 'Gene', 'chr', 'strand', 'TTS'] + [_[0] for _ in fls]
+
+        # filter count_tts, exclude the trascripts which have other TSS within 2k downstream region
+        # {'chr': '1',
+        # 'strand': '+',
+        # 'gene_name': 'SGIP1',
+        # 'start': 66999639,
+        # 'end': 67216822}
+        # first get all TSS as a sorted list
+        tss_list = {}  # key is chr
+        for gene_info in gtf_info.values():
+            tss_list.setdefault(gene_info['chr'], set()).add(gene_info['tss'])
+        tss_list = {k: sorted(v) for k, v in tss_list.items()}
+
+        tts_dowstream_no_tss_region_len = 2000  # exclude the trascripts which have other TSS within 2k downstream region
+        n_excluded = 0
+        with open(fn_tts_count, 'w') as o, open(fn_tts_count_filtered, 'w') as o1:
             print('\t'.join(tts_file_header), file=o)
+            print('\t'.join(tts_file_header), file=o1)
             for ts in ts_list:
-                gn = gtf_info[ts]['gene_name']
+                gene_info = gtf_info[ts]
+                gn = gene_info['gene_name']
                 if ts in tts_str:
-                    print('\t'.join([ts, gn] + tts_str[ts]), file=o)
-        logger.debug(f'TTS count file saved: {fn_tts_count}')
+                    line = '\t'.join([ts, gn] + tts_str[ts])
+                    print(line, file=o)
+                    
+                    
+                    tts = gene_info['tts']
+                    strand = gene_info['strand']
+                    chr_ = gene_info['chr']
+                    tss_list_chr = tss_list[chr_]
+                    # try:
+                    tts_region_s, tts_region_e = [tts, tts + tts_dowstream_no_tss_region_len] if strand == '+' else [tts - tts_dowstream_no_tss_region_len, tts]
+                    left_idx =  bisect.bisect_left(tss_list_chr, tts_region_s)
+                    right_idx = bisect.bisect_right(tss_list_chr, tts_region_e)
+                    # except:
+                    #     e = traceback.format_exc()
+                    #     logger.error(e)
+                    #     logger.info([tts, tts_dowstream_no_tss_region_len])
+                    #     logger.info(f'chr = {chr_}, tts_region_s={tts_region_s}, tts_region_e= {tts_region_e}, tss_list_chr len = {len(tss_list_chr)}, first 20 = {tss_list_chr[:20]}' )
+                    #     sys.exit(1)
+                        
+                    if left_idx < right_idx:
+                        n_excluded += 1
+                        continue
+                    print(line, file=o1)
+        
+        logger.debug(f'TTS count file saved: {fn_tts_count}, filtered = {fn_tts_count_filtered}, transcript excluded during filtering due to having TSS within 2k downstream of TTS region = {n_excluded}')
     
     return pp_str, gb_str
 
@@ -3051,3 +3105,198 @@ def pause_longeRNA_main(args):
         # change_pindex
         logger.info('Running change_pindex')
         change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, fno_pindex_change, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)
+
+
+def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
+    """
+    get the alternative isoform across conditions
+    fn = count_pp_gb.txt / count_tts.txt
+    the normalized version
+    """
+    data = pd.read_csv(fn, sep='\t')
+    
+    # with open(fn_active_gene) as f:
+    #     active_ts_set = {_.split('\t')[0] for _ in f}
+    # logger.info(f'active transcripts = {len(active_ts_set)}')
+    
+    # keep active transcripts only
+    # !!!! this is wrong , because the active_genes already collapsed by the gene, only 1 transcript for each gene
+    
+    # data = data.loc[data['Transcript'].isin(active_ts_set)]
+    # logger.info(f'data after keep only ts in active_genes: {len(data)}')
+
+    cols_orig = list(data.columns)
+    if 'count_pp_gb' in fn or 'normalized_pp_gb' in fn:
+        sam_list = [_[4:] for _ in cols_orig if _.startswith('ppc_')]
+        data.columns = [_[4:] if _.startswith('ppc_') else _ for _ in cols_orig]
+        out_prefix = 'TSS_'
+        pos_in_use = 'TSS'
+        data[pos_in_use] = 0
+        data.loc[data.strand == '+', pos_in_use] = data.loc[data.strand == '+', 'start']
+        data.loc[data.strand == '-', pos_in_use] = data.loc[data.strand == '-', 'end']
+        min_sum = 50
+        distance_thres = 500
+    elif 'count_tts' in fn:
+        out_prefix = 'TTS_'
+        pos_in_use = 'TTS'
+        min_sum = 80
+        distance_thres = 1000
+        tmp = list(data.columns)
+        idx_tts = tmp.index('TTS')
+        sam_list = tmp[idx_tts+1:]
+        
+        # get the normalized
+        fn_count_tts_norm = f'{pwout}/intermediate/normalized_count_tts.txt'
+        if not os.path.exists(fn_count_tts_norm):
+            fn_nf = f'{pwout}/intermediate/nf.txt'
+            if not os.path.exists(fn_nf):
+                logger.error(f'normalization factor file {fn_nf} not found')
+                return 1
+            with open(fn_nf) as f:
+                f.readline()
+                nf = {}
+                for i in f:
+                    lb, v = i.strip().split('\t')
+                    nf[lb] = float(v)
+            if set(sam_list) != set(nf):
+                tmp1 = set(sam_list) - set(nf)
+                tmp2 = set(nf) - set(sam_list)
+                logger.error(f'sample list in nf.txt and count_tts.txt does not match:  nf only = {tmp1}, count_tts.txt only = {tmp2}')
+                return 1
+            for lb, v in nf.items():
+                data[lb] = data[lb] * v
+            logger.info(f'saving normalized count_tts.txt')
+            data.to_csv(fn_count_tts_norm, sep='\t', index=False, na_rep='NA')
+        else:
+            data = pd.read_csv(fn_count_tts_norm, sep='\t')
+    else:
+        logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
+        return 1
+
+    if rep2 < 1:
+        logger.error(f'case samples must be available to find alternative isoforms')
+        return 1
+    
+    # round the value
+    round_digit = 3
+    data[sam_list] = data[sam_list].round(round_digit)
+    # only keep the genes with multiple isoforms with different TSS
+    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
+    data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
+
+    sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
+    
+    data['ctrl_sum'] = data[sam1].sum(axis=1)
+    data['case_sum'] = data[sam2].sum(axis=1)
+    
+    # exclude transcripts with ctrl_sum and case_sum are both < 5
+    # if pos_in_use == 'TSS':
+    
+    data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
+    # only keep ts in active_genes
+    
+    # keep only genes still have multiple isoforms
+    data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
+    data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
+    
+    n_rows = len(data)
+    if n_rows < 2:
+        logger.warning(f'No transcrits remain for alternative isoform identification')
+        return 1
+
+    data = data.sort_values(['chr', 'Gene', pos_in_use])
+    data['ctrl_mean'] = (data['ctrl_sum'] / rep1).round(round_digit)
+    data['case_mean'] = (data['case_sum'] / rep2).round(round_digit)
+    
+    def compare_transcripts(gn, ts1, ts2, ctrl_max, case_max):
+        ts_id1, ts_id2 = ts1.Transcript, ts2.Transcript
+        tss_pos_ts1, tss_pos_ts2 = [ts1[pos_in_use], ts2[pos_in_use]]
+        ratio_ctrl = (ts1['ctrl_mean'] / ts2['ctrl_mean']).round(round_digit) if ts2['ctrl_mean'] > 0 else np.nan
+        ratio_case = (ts1['case_mean'] / ts2['case_mean']).round(round_digit) if ts2['case_mean'] > 0 else np.nan
+        ts1_mean_ctrl, ts1_mean_case = ts1['ctrl_mean'], ts1['case_mean']
+        ts2_mean_ctrl, ts2_mean_case = ts2['ctrl_mean'], ts2['case_mean']
+        
+        isoform_switch_flag = ''
+        main_ts = {'case': set(), 'ctrl': set()}
+        for condition, max_v in zip(['ctrl', 'case'], [ctrl_max, case_max]):
+            for ts_lb, its in [['ts1', ts1], ['ts2', ts2]]:
+                # logger.info(its)
+                # logger.info(f'{condition}_mean')
+                # logger.info(its['ctrl_mean'])
+                v = its[f'{condition}_mean']
+                if v == max_v:
+                    main_ts[condition].add(ts_lb)
+        main_ts_ctrl, main_ts_case = main_ts['ctrl'], main_ts['case']
+        if (main_ts_ctrl or main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
+            isoform_switch_flag = 'isoform_switched'
+        tables = []
+        for isam1 in sam1:
+            for isam2 in sam2:
+                tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
+        
+        if len(tables) == 1:
+            vals = tables[0][0] + tables[0][1]
+            pvalue = fisher.pvalue(*vals).two_tail
+            odds_ratio = ratio_ctrl / ratio_case
+        else:
+            # cmhtest
+            tables = np.array(tables).T
+            cmt = contingency_tables.StratifiedTable(tables=tables)
+            odds_ratio = cmt.oddsratio_pooled
+            test_res = cmt.test_null_odds(correction=True)
+            pvalue = test_res.pvalue
+        return [ts1['chr'], gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue, ';'.join(sorted(main_ts_ctrl)), ';'.join(sorted(main_ts_case)), isoform_switch_flag]
+
+    def parse_by_gene(gn, g):
+        """
+        input is a groupby obj, with a single gene
+        each row in the output is a transcript comparison.
+        e.g. if there are 4 transcripts, the output will have 4*3/2 = 6 combinations
+        """
+        ts_list = list(g['Transcript'])
+        n_ts = len(ts_list)
+        res = []
+        ctrl_max = g.ctrl_mean.max()
+        case_max = g.case_mean.max()
+        for i in range(n_ts - 1):
+            ts1 = g.iloc[i]
+            pos_ts1 = ts1[pos_in_use]
+            for j in range(i + 1, n_ts):
+                ts2 = g.iloc[j]
+                pos_ts2 = ts2[pos_in_use]
+
+                # if the TSS / TTS of these 2 transcripts are too close, skip this combination
+                if abs(pos_ts1 - pos_ts2) < distance_thres:
+                    continue
+                res.append(compare_transcripts(gn, ts1, ts2, ctrl_max, case_max))
+        return pd.DataFrame(res, columns=['chr', 'Gene', 'Transcript1', 'Transcript2', f'{out_prefix}transcript1', f'{out_prefix}transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue', 'main_isoform_ctrl', 'main_isoform_case', 'isoform_switched'])
+    
+    
+    df_isoform = None
+    empty_df = []
+    for gn, g in data.groupby('Gene'):
+        tmp = parse_by_gene(gn, g)
+        if len(tmp) == 0:
+            empty_df.append(gn)
+            continue
+        if df_isoform is None:
+            df_isoform = tmp
+        else:
+            df_isoform = pd.concat([df_isoform, tmp])
+        
+    # if len(empty_df) > 0:
+    #     logger.warning(f'gn without transcripts for comparison due to {pos_in_use} too close, n = {len(empty_df)}, first 10 genes = {empty_df[:10]}')
+    
+    # df_isoform = data.groupby('Gene').apply(lambda g: parse_by_gene(g.name, g))
+    
+    # df_isoform = df_isoform.dropna(axis=1, how='all').reset_index(drop=True)
+    # logger.info(df_isoform.head())
+    idx_pval = list(df_isoform.columns).index('pvalue')
+    df_isoform.insert(idx_pval + 1, 'FDR', multipletests(df_isoform['pvalue'], method='fdr_bh')[1])
+    sig = df_isoform.loc[df_isoform.pvalue < 0.05]
+    
+    fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_across_conditions.tsv'
+    fn_sig = f'{pwout}/known_gene/{out_prefix}alternative_isoforms_across_conditions.sig.tsv'
+    df_isoform.to_csv(fn_isoform, index=False, na_rep='NA', sep='\t')
+    sig.to_csv(fn_sig, index=False, na_rep='NA', sep='\t')
+    

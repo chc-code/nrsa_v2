@@ -87,30 +87,68 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False):
     return logger
 logger = getlogger()
 
-
 def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     """
     get the alternative isoform across conditions
     fn = count_pp_gb.txt / count_tts.txt
+    the normalized version
     """
-    
-    if 'normalized' in fn:
-        norm_flag = '.norm'
-    else:
-        norm_flag = ''
     data = pd.read_csv(fn, sep='\t')
-    if 'count_pp_gb' in fn:
-        col_prefix = 'ppc_'
+    
+    # with open(fn_active_gene) as f:
+    #     active_ts_set = {_.split('\t')[0] for _ in f}
+    # logger.info(f'active transcripts = {len(active_ts_set)}')
+    
+    # keep active transcripts only
+    # !!!! this is wrong , because the active_genes already collapsed by the gene, only 1 transcript for each gene
+    
+    # data = data.loc[data['Transcript'].isin(active_ts_set)]
+    # logger.info(f'data after keep only ts in active_genes: {len(data)}')
+
+    cols_orig = list(data.columns)
+    if 'count_pp_gb' in fn or 'normalized_pp_gb' in fn:
+        sam_list = [_[4:] for _ in cols_orig if _.startswith('ppc_')]
+        data.columns = [_[4:] if _.startswith('ppc_') else _ for _ in cols_orig]
         out_prefix = 'TSS_'
         pos_in_use = 'TSS'
         data[pos_in_use] = 0
         data.loc[data.strand == '+', pos_in_use] = data.loc[data.strand == '+', 'start']
         data.loc[data.strand == '-', pos_in_use] = data.loc[data.strand == '-', 'end']
-        
+        min_sum = 50
+        distance_thres = 500
     elif 'count_tts' in fn:
-        col_prefix = 'tts_'
         out_prefix = 'TTS_'
         pos_in_use = 'TTS'
+        min_sum = 80
+        distance_thres = 1000
+        tmp = list(data.columns)
+        idx_tts = tmp.index('TTS')
+        sam_list = tmp[idx_tts+1:]
+        
+        # get the normalized
+        fn_count_tts_norm = f'{pwout}/intermediate/normalized_count_tts.txt'
+        if not os.path.exists(fn_count_tts_norm):
+            fn_nf = f'{pwout}/intermediate/nf.txt'
+            if not os.path.exists(fn_nf):
+                logger.error(f'normalization factor file {fn_nf} not found')
+                return 1
+            with open(fn_nf) as f:
+                f.readline()
+                nf = {}
+                for i in f:
+                    lb, v = i.strip().split('\t')
+                    nf[lb] = float(v)
+            if set(sam_list) != set(nf):
+                tmp1 = set(sam_list) - set(nf)
+                tmp2 = set(nf) - set(sam_list)
+                logger.error(f'sample list in nf.txt and count_tts.txt does not match:  nf only = {tmp1}, count_tts.txt only = {tmp2}')
+                return 1
+            for lb, v in nf.items():
+                data[lb] = data[lb] * v
+            logger.info(f'saving normalized count_tts.txt')
+            data.to_csv(fn_count_tts_norm, sep='\t', index=False, na_rep='NA')
+        else:
+            data = pd.read_csv(fn_count_tts_norm, sep='\t')
     else:
         logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
         return 1
@@ -118,16 +156,13 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     if rep2 < 1:
         logger.error(f'case samples must be available to find alternative isoforms')
         return 1
+    
+    # round the value
+    round_digit = 3
+    data[sam_list] = data[sam_list].round(round_digit)
     # only keep the genes with multiple isoforms with different TSS
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
-
-    cols_orig = list(data.columns)
-    sam_list = [i for i in cols_orig if i.startswith(col_prefix)]
-    if len(sam_list) == 0 and pos_in_use == 'TTS':
-        tmp = list(data.columns)
-        idx_tts = tmp.index('TTS')
-        sam_list = tmp[idx_tts+1:]
 
     sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
     
@@ -136,29 +171,48 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     
     # exclude transcripts with ctrl_sum and case_sum are both < 5
     # if pos_in_use == 'TSS':
-    min_sum = 50
+    
     data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
+    # only keep ts in active_genes
+    
     # keep only genes still have multiple isoforms
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
-    logger.info(data.shape)
+    
+    n_rows = len(data)
+    if n_rows < 2:
+        logger.warning(f'No transcrits remain for alternative isoform identification')
+        return 1
 
     data = data.sort_values(['chr', 'Gene', pos_in_use])
-    data['ctrl_mean'] = data['ctrl_sum'] / rep1
-    data['case_mean'] = data['case_sum'] / rep2
+    data['ctrl_mean'] = (data['ctrl_sum'] / rep1).round(round_digit)
+    data['case_mean'] = (data['case_sum'] / rep2).round(round_digit)
     
     def compare_transcripts(gn, ts1, ts2, ctrl_max, case_max):
         ts_id1, ts_id2 = ts1.Transcript, ts2.Transcript
         tss_pos_ts1, tss_pos_ts2 = [ts1[pos_in_use], ts2[pos_in_use]]
-        ratio_ctrl = ts1['ctrl_mean'] / ts2['ctrl_mean'] if ts2['ctrl_mean'] > 0 else np.nan
-        ratio_case = ts1['case_mean'] / ts2['case_mean'] if ts2['case_mean'] > 0 else np.nan
+        ratio_ctrl = (ts1['ctrl_mean'] / ts2['ctrl_mean']).round(round_digit) if ts2['ctrl_mean'] > 0 else np.nan
+        ratio_case = (ts1['case_mean'] / ts2['case_mean']).round(round_digit) if ts2['case_mean'] > 0 else np.nan
         ts1_mean_ctrl, ts1_mean_case = ts1['ctrl_mean'], ts1['case_mean']
         ts2_mean_ctrl, ts2_mean_case = ts2['ctrl_mean'], ts2['case_mean']
         
+        isoform_switch_flag = ''
+        main_ts = {'case': set(), 'ctrl': set()}
+        for condition, max_v in zip(['ctrl', 'case'], [ctrl_max, case_max]):
+            for ts_lb, its in [['ts1', ts1], ['ts2', ts2]]:
+                # logger.info(its)
+                # logger.info(f'{condition}_mean')
+                # logger.info(its['ctrl_mean'])
+                v = its[f'{condition}_mean']
+                if v == max_v:
+                    main_ts[condition].add(ts_lb)
+        main_ts_ctrl, main_ts_case = main_ts['ctrl'], main_ts['case']
+        if (main_ts_ctrl or main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
+            isoform_switch_flag = 'isoform_switched'
         tables = []
         for isam1 in sam1:
             for isam2 in sam2:
-                tables.append([[ts1[isam1], ts1[isam2]], [ts2[isam1], ts2[isam2]]])
+                tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
         
         if len(tables) == 1:
             vals = tables[0][0] + tables[0][1]
@@ -171,9 +225,9 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
             odds_ratio = cmt.oddsratio_pooled
             test_res = cmt.test_null_odds(correction=True)
             pvalue = test_res.pvalue
-        return [gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue]
+        return [ts1['chr'], gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue, ';'.join(sorted(main_ts_ctrl)), ';'.join(sorted(main_ts_case)), isoform_switch_flag]
 
-    def parse_by_gene(g):
+    def parse_by_gene(gn, g):
         """
         input is a groupby obj, with a single gene
         each row in the output is a transcript comparison.
@@ -182,27 +236,50 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
         ts_list = list(g['Transcript'])
         n_ts = len(ts_list)
         res = []
-        gn = g.name
         ctrl_max = g.ctrl_mean.max()
         case_max = g.case_mean.max()
         for i in range(n_ts - 1):
             ts1 = g.iloc[i]
+            pos_ts1 = ts1[pos_in_use]
             for j in range(i + 1, n_ts):
                 ts2 = g.iloc[j]
+                pos_ts2 = ts2[pos_in_use]
+
+                # if the TSS / TTS of these 2 transcripts are too close, skip this combination
+                if abs(pos_ts1 - pos_ts2) < distance_thres:
+                    continue
                 res.append(compare_transcripts(gn, ts1, ts2, ctrl_max, case_max))
-        return pd.DataFrame(res, columns=['Gene', 'Transcript1', 'Transcript2', f'{out_prefix}transcript1', f'{out_prefix}transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue'])
+        return pd.DataFrame(res, columns=['chr', 'Gene', 'Transcript1', 'Transcript2', f'{out_prefix}transcript1', f'{out_prefix}transcript2', 'Ctrl_max_count', 'Ctrl_ts1_count', 'Ctrl_ts2_count', 'Ratio_ts1_vs_ts2_in_Ctrl', 'Case_max_count', 'Case_ts1_count', 'Case_ts2_count', 'Ratio_ts1_vs_ts2_in_Case', 'odds_ratio', 'pvalue', 'main_isoform_ctrl', 'main_isoform_case', 'isoform_switched'])
     
     
+    df_isoform = None
+    empty_df = []
+    for gn, g in data.groupby('Gene'):
+        tmp = parse_by_gene(gn, g)
+        if len(tmp) == 0:
+            empty_df.append(gn)
+            continue
+        if df_isoform is None:
+            df_isoform = tmp
+        else:
+            df_isoform = pd.concat([df_isoform, tmp])
+        
+    # if len(empty_df) > 0:
+    #     logger.warning(f'gn without transcripts for comparison due to {pos_in_use} too close, n = {len(empty_df)}, first 10 genes = {empty_df[:10]}')
     
-    df_isoform = data.groupby('Gene').apply(parse_by_gene).reset_index(drop=True)
+    # df_isoform = data.groupby('Gene').apply(lambda g: parse_by_gene(g.name, g))
     
-    df_isoform['FDR'] = multipletests(df_isoform['pvalue'], method='fdr_bh')[1]
+    # df_isoform = df_isoform.dropna(axis=1, how='all').reset_index(drop=True)
+    # logger.info(df_isoform.head())
+    idx_pval = list(df_isoform.columns).index('pvalue')
+    df_isoform.insert(idx_pval + 1, 'FDR', multipletests(df_isoform['pvalue'], method='fdr_bh')[1])
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
     fn_isoform = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.tsv'
     fn_sig = f'{pwout}/{out_prefix}alternative_isoforms_across_conditions.sig.tsv'
     df_isoform.to_csv(fn_isoform, index=False, na_rep='NA', sep='\t')
     sig.to_csv(fn_sig, index=False, na_rep='NA', sep='\t')
+    
     
 
 if __name__ == "__main__":
@@ -213,10 +290,12 @@ if __name__ == "__main__":
     ps.add_argument('rep1', help="""sample count for conditon1""",type=int)
     ps.add_argument('rep2', help="""sample count for conditon2""", type=int)
     ps.add_argument('-out_dir', '-o',  help="""output directory, default is current dir""")
+    # ps.add_argument('-fn_active_gene', '-active', help="""file name for active genes, if specified, will only keep the transcripts in this file.""")
+
     args = ps.parse_args()
     rep1 = args.rep1
     rep2 = args.rep2
     fn = args.fn
     out_dir = args.out_dir if args.out_dir else os.getcwd()
-
+    # fn_active_gene = args.fn_active_gene
     get_alternative_isoform_across_conditions(fn, out_dir, rep1, rep2)

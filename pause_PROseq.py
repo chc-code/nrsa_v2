@@ -450,10 +450,12 @@ def main(args):
     # # get alternative isoforms
     logger.info('Getting alternative TSS isoforms')
      
-    fn_count_pp_gb_norm = f'{pwout}/intermediate/count_pp_gb.txt'
-    fn_count_tts_norm = f'{pwout}/intermediate/count_tts.filtered.txt'
-    get_alternative_isoform_across_conditions(fn_count_pp_gb_norm, pwout, pw_bed, rep1, rep2)
-    get_alternative_isoform_across_conditions(fn_count_tts_norm, pwout, pw_bed, rep1, rep2, tts_padding=tts_padding)
+    fn_count_pp_gb = f'{pwout}/intermediate/count_pp_gb.txt'
+    fn_count_tts = f'{pwout}/intermediate/count_tts.filtered.txt'
+    logger.debug(f'pwout = {pwout}')
+    logger.debug(vars(analysis))
+    get_alternative_isoform_across_conditions(fn_count_pp_gb, pwout, pw_bed, rep1, rep2)
+    get_alternative_isoform_across_conditions(fn_count_tts, pwout, pw_bed, rep1, rep2, tts_padding=tts_padding)
     
     
 if __name__ == "__main__":

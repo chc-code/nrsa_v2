@@ -1318,7 +1318,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     if skip_filtering:
         data_pass = data
         data_drop = pd.DataFrame(columns=data.columns)
-        return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
+        return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, None
     
     tmp1 = sum([1 if cols_raw[i].startswith('gbc_') else 0 for i in idx_gbc_combined])
     tmp2 = sum([1 if cols_raw[i].startswith('gbd_') else 0 for i in idx_gbd_combined])
@@ -1330,12 +1330,15 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     
     data['tmp_ppc_pass'] = data.iloc[:, idx_ppc_combined].apply(lambda x: all(x > 0), axis=1)
     
+    sum_gbc = []
     for sn, idx_gbc_tmp, idx_gbd_tmp in zip(range(n_sam), idx_gbc_combined, idx_gbd_combined):
         sum_col = data.iloc[:, idx_gbc_tmp].sum()
+        # logger.info(f'{sn} - {sum_col}')
+        sum_gbc.append(int(sum_col))
         data[f'tmp_gbd_pass_{sn+1}'] = data.iloc[:, idx_gbd_tmp] * 10_000_000 / sum_col
     cols_gbd_pass = [f'tmp_gbd_pass_{sn+1}' for sn in range(n_sam)]
     data['tmp_gbd_pass'] = data[cols_gbd_pass].apply(lambda x: x.sum()/n_sam > 0.004, axis=1)
-    
+
     
     # already compared with R result, the same
     data_pass = data[data['tmp_ppc_pass'] & data['tmp_gbd_pass']] # data0 in perl code
@@ -1344,7 +1347,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
     data_pass = data_pass.drop(columns=[_ for _ in data_pass.columns if _[:4] == 'tmp_'])
     data_drop = data_drop.drop(columns=[_ for _ in data_drop.columns if _[:4] == 'tmp_'])
 
-    return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop
+    return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, sum_gbc
 
 def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None, islongerna=False):
     # data = processed, count_pp_gb.txt, already removed the chr, start, end  and strand column, and already collapsed the transcripts with the same gene
@@ -1362,7 +1365,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
 
     n_sam = rep1 + rep2
     skip_filtering = islongerna # skip if islongerna
-    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, sum_gbc = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=skip_filtering)
     
     # logger.warning(n_gene_cols)
     # logger.warning(data.head())
@@ -1371,7 +1374,10 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     
     if not islongerna:
         data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
-    
+        
+        fn_gbc_sum = f'{out_dir}/intermediate/gbc_sum.json'
+        with open(fn_gbc_sum, 'w')  as o:
+            json.dump(sum_gbc, o)    
     data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R
     data_drop_pp = data_drop.iloc[:, idx_gene_cols + idx_ppc_combined] # data_pp in R
     
@@ -1508,7 +1514,7 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
 
     # get the normalized data
     n_prev_cols = n_gene_cols + n_extra_cols
-    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, gbc_sum = filter_pp_gb(data_raw, n_prev_cols, rep1, rep2, skip_filtering=True)
     
     norm_factors = 1 / size_factors
     ppc_norm = data_raw.iloc[:, idx_ppc_combined] * norm_factors
@@ -1603,7 +1609,7 @@ def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, fac
         cols_keep = list(range(n_gene_cols)) + list(range(n_cols_prev, len(data.columns))) # drop the chr, start, end, strand columns
         data = data.iloc[:, cols_keep]
 
-    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
+    col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, gbc_sum = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
     
     if n_sam == 2:
         # use fisher exact test
@@ -3107,13 +3113,16 @@ def pause_longeRNA_main(args):
         change_pindex(fno_prefix, n_gene_cols, fn_count_pp_gb, fno_pindex_change, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag)
 
 
-def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
+def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts_padding=None):
     """
     get the alternative isoform across conditions
     fn = count_pp_gb.txt / count_tts.txt
     the normalized version
     """
+    n_transcript = {}
     data = pd.read_csv(fn, sep='\t')
+    n_orig = len(data)
+    n_transcript['input'] = n_orig
     
     # with open(fn_active_gene) as f:
     #     active_ts_set = {_.split('\t')[0] for _ in f}
@@ -3122,11 +3131,8 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     # keep active transcripts only
     # !!!! this is wrong , because the active_genes already collapsed by the gene, only 1 transcript for each gene
     
-    # data = data.loc[data['Transcript'].isin(active_ts_set)]
-    # logger.info(f'data after keep only ts in active_genes: {len(data)}')
-
     cols_orig = list(data.columns)
-    if 'count_pp_gb' in fn or 'normalized_pp_gb' in fn:
+    if 'count_pp_gb' in fn:
         sam_list = [_[4:] for _ in cols_orig if _.startswith('ppc_')]
         data.columns = [_[4:] if _.startswith('ppc_') else _ for _ in cols_orig]
         out_prefix = 'TSS_'
@@ -3144,31 +3150,9 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
         tmp = list(data.columns)
         idx_tts = tmp.index('TTS')
         sam_list = tmp[idx_tts+1:]
-        
-        # get the normalized
-        fn_count_tts_norm = f'{pwout}/intermediate/normalized_count_tts.txt'
-        if not os.path.exists(fn_count_tts_norm):
-            fn_nf = f'{pwout}/intermediate/nf.txt'
-            if not os.path.exists(fn_nf):
-                logger.error(f'normalization factor file {fn_nf} not found')
-                return 1
-            with open(fn_nf) as f:
-                f.readline()
-                nf = {}
-                for i in f:
-                    lb, v = i.strip().split('\t')
-                    nf[lb] = float(v)
-            if set(sam_list) != set(nf):
-                tmp1 = set(sam_list) - set(nf)
-                tmp2 = set(nf) - set(sam_list)
-                logger.error(f'sample list in nf.txt and count_tts.txt does not match:  nf only = {tmp1}, count_tts.txt only = {tmp2}')
-                return 1
-            for lb, v in nf.items():
-                data[lb] = data[lb] * v
-            logger.info(f'saving normalized count_tts.txt')
-            data.to_csv(fn_count_tts_norm, sep='\t', index=False, na_rep='NA')
-        else:
-            data = pd.read_csv(fn_count_tts_norm, sep='\t')
+        if tts_padding is None:
+            logger.error(f'tts_padding is not passed in for TTS input: {fn}')
+            return 1
     else:
         logger.error(f'Input file should be count_pp_gb or count_tts, input = {fn}')
         return 1
@@ -3182,7 +3166,9 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     data[sam_list] = data[sam_list].round(round_digit)
     # only keep the genes with multiple isoforms with different TSS
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
+    n_transcript['keep_only_multiple_isoforms'] = len(data)
     data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
+    n_transcript[f'remove_all_transcripts_with_same_{pos_in_use}'] = len(data)
 
     sam1, sam2 = (sam_list[:rep1], sam_list[rep1:])
     
@@ -3190,14 +3176,44 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     data['case_sum'] = data[sam2].sum(axis=1)
     
     # exclude transcripts with ctrl_sum and case_sum are both < 5
-    # if pos_in_use == 'TSS':
-    
-    data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
-    # only keep ts in active_genes
+    if pos_in_use == 'TSS':
+        data = data.loc[(data['ctrl_sum'] >= min_sum) | (data['case_sum'] >= min_sum)]
+        n_transcript[f'filter_by_count_{pos_in_use}'] = len(data)
+    elif pos_in_use == 'TTS':
+        # for TTS, use the total sum of gbc as the normalization factor
+        # below is the previous change_pp_gb code
+        # the sum is about 37%-50% of the total reads count
+        fn_gbc_sum = f'{pwout}/intermediate/gbc_sum.json'
+        tts_region_len = tts_padding * 2 # both upstream and downstream
+        with open(fn_gbc_sum) as f:
+            gbc_sum = json.load(f)
+        norm_density = data[sam_list]/gbc_sum * 10_000_000 / tts_region_len  # divide by region length to get density
+        norm_density_mean = norm_density.sum(axis=1)/len(sam_list)
+        
+        data = data.loc[norm_density_mean > 0.004]
+        n_transcript[f'filter_by_count_{pos_in_use}'] = len(data)
+        
+
+        # for sn, idx_gbc_tmp, idx_gbd_tmp in zip(range(n_sam), idx_gbc_combined, idx_gbd_combined):
+        #     sum_col = data.iloc[:, idx_gbc_tmp].sum()
+        #     data[f'tmp_gbd_pass_{sn+1}'] = data.iloc[:, idx_gbd_tmp] * 10_000_000 / sum_col
+        # cols_gbd_pass = [f'tmp_gbd_pass_{sn+1}' for sn in range(n_sam)]
+        # data['tmp_gbd_pass'] = data[cols_gbd_pass].apply(lambda x: x.sum()/n_sam > 0.004, axis=1)
+        
+        # get the gbc sum for each sample
+    else:
+        logger.error(f'unknown input for identifying isoform: {fn}')
+        sys.exit(1)
     
     # keep only genes still have multiple isoforms
     data = data.groupby('Gene').filter(lambda x: x['Transcript'].nunique() > 1)
     data = data.groupby('Gene').filter(lambda x: x[pos_in_use].nunique() > 1) # 333 rows
+    n_transcript[f'keep_only_genes_with_multiple_isoforms_after filtering_count'] = len(data)
+    
+    tmp = json.dumps(n_transcript, indent=3)
+    logger.warning(f'{pos_in_use}\n{tmp}')
+
+    
     
     n_rows = len(data)
     if n_rows < 2:
@@ -3295,8 +3311,8 @@ def get_alternative_isoform_across_conditions(fn, pwout, rep1, rep2):
     df_isoform.insert(idx_pval + 1, 'FDR', multipletests(df_isoform['pvalue'], method='fdr_bh')[1])
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
-    fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_across_conditions.tsv'
-    fn_sig = f'{pwout}/known_gene/{out_prefix}alternative_isoforms_across_conditions.sig.tsv'
+    fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_between_conditions.tsv'
+    fn_sig = f'{pwout}/known_gene/{out_prefix}alternative_isoforms_between_conditions.sig.tsv'
     df_isoform.to_csv(fn_isoform, index=False, na_rep='NA', sep='\t')
     sig.to_csv(fn_sig, index=False, na_rep='NA', sep='\t')
     

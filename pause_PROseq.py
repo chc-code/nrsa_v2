@@ -398,7 +398,8 @@ def main(args):
 
     fno_ppchange = f'{pwout}/known_gene/pp_change.txt'
     fno_gbchange = f'{pwout}/known_gene/gb_change.txt'
-    if not (os.path.exists(fno_ppchange) and os.path.exists(fno_gbchange) and demo):
+    fn_gbc_sum = f'{pwout}/intermediate/gbc_sum.json'
+    if not (os.path.exists(fno_ppchange) and os.path.exists(fno_gbchange) and os.path.exists(fn_gbc_sum) and demo):
         logger.info('Change_pp_gb')
         change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
     else:
@@ -449,13 +450,11 @@ def main(args):
     # # get alternative isoforms
     logger.info('Getting alternative TSS isoforms')
      
-    fn_count_pp_gb_norm = f'{pwout}/known_gene/normalized_pp_gb.txt'
+    fn_count_pp_gb_norm = f'{pwout}/intermediate/count_pp_gb.txt'
     fn_count_tts_norm = f'{pwout}/intermediate/count_tts.filtered.txt'
-    get_alternative_isoform_across_conditions(fn_count_pp_gb_norm, pwout, rep1, rep2)
-    get_alternative_isoform_across_conditions(fn_count_tts_norm, pwout, rep1, rep2)
+    get_alternative_isoform_across_conditions(fn_count_pp_gb_norm, pwout, pw_bed, rep1, rep2)
+    get_alternative_isoform_across_conditions(fn_count_tts_norm, pwout, pw_bed, rep1, rep2, tts_padding=tts_padding)
     
-    
-
     
 if __name__ == "__main__":
     args = getargs()

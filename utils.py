@@ -3277,23 +3277,27 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
         if (main_ts_ctrl & main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
             isoform_switch_flag = 'isoform_switched'
         tables = []
-        for isam1 in sam1:
-            for isam2 in sam2:
-                n_zero = 0
-                for ts in [ts1, ts2]:
-                    for isam in [isam1, isam2]:
-                        if ts[isam] == 0:
-                            n_zero += 1
-                if n_zero < 3:
-                    tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
-        if len(tables) == 0:
-            pvalue = odds_ratio = np.nan
-        elif len(tables) == 1:
-            vals = tables[0][0] + tables[0][1]
-            pvalue = fisher.pvalue(*vals).two_tail
-            odds_ratio = ratio_ctrl / ratio_case
+        
+        # if case_sum or ctrl_sum are zero for both ts, will not be suitable for cmhtest
+        if ts1['ctrl_sum'] + ts2['ctrl_sum'] == 0 or ts1['case_sum'] + ts2['case_sum'] == 0:
+            pvalue = np.nan
+            odds_ratio = 0
         else:
-            odds_ratio, pvalue = cmhtest(tables)
+            for isam1 in sam1:
+                for isam2 in sam2:
+                    tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
+            if len(tables) == 0:
+                pvalue = odds_ratio = np.nan
+            elif len(tables) == 1:
+                vals = tables[0][0] + tables[0][1]
+                pvalue = fisher.pvalue(*vals).two_tail
+                odds_ratio = ratio_ctrl / ratio_case
+            else:
+                with warnings.catch_warnings(record=True) as w:
+                    odds_ratio, pvalue = cmhtest(tables)
+                    if w:
+                        logger.debug(f'cmhtest warning: {w[0].message}')
+                        logger.debug(f'gn = {gn}, ts1 = {ts_id1} ts2 = {ts_id2}, tables = {tables}')
         return [ts1['chr'], gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue, ';'.join(sorted(main_ts_ctrl)), ';'.join(sorted(main_ts_case)), isoform_switch_flag]
 
     def parse_by_gene(gn, g):

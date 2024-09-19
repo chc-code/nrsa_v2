@@ -1987,10 +1987,25 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
     count_per_base = {}
     logger.info(f'Pre-counting for {fn_lb}')
     n_lines = 0
+    n_error = 0
+    single_col = 0
+    fatal = 0
     with gzip.open(fn_out_bed, 'rt') if fn_out_bed.endswith('.gz') else open(fn_out_bed, 'r') as fh_bed:
         for i in fh_bed:
             # chr1	10511	10569	A00758:60:HNYK7DSXX:4:2461:27181:23171	32	-
-            chr_, s, e, _, _, strand = i[:-1].split('\t')
+            try:
+                chr_, s, e, _, _, strand, *_ = i[:-1].split('\t', 6)
+            except:
+                nchr, ncol = len(i), len(i.split('\t'))
+                logger.debug(f'Invalid line format: nchar = {nchr}, ncol = {ncol}, first 100 char = {i[:100]}')
+                if ncol == 1:
+                    single_col += 1
+                else:
+                    n_error += 1
+                    if n_error > 100:
+                        fatal = 1
+                        break
+                continue
             strand_idx, read_end = (0, int(e)) if strand == '+' else (1, int(s) + 1)
 
             chunk = read_end // bin_size
@@ -2005,6 +2020,11 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
         chr_map = {refine_chr(k): k for k in count_bin}
         count_per_base = {refine_chr(k): v for k, v in count_per_base.items()}
         count_bin = {refine_chr(k): v for k, v in count_bin.items()}
+    if n_error:
+        prefix = 'more than ' if fatal else ''
+        logger.error(f'{prefix} {n_error} lines with invalid format were found, check the input file: {fn_out_bed} and \nlog file for details.\nthe first 6 columns should be chr, start, end, read_name, score, strand')
+        logger.error(f'now exiting...')
+        sys.exit(1)
     logger.info('done.')
     # dump the pickle
     with open(fn_count_per_base, 'wb') as f:
@@ -3274,7 +3294,7 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
                 if v == max_v:
                     main_ts[condition].add(ts_lb)
         main_ts_ctrl, main_ts_case = main_ts['ctrl'], main_ts['case']
-        if (main_ts_ctrl & main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
+        if (main_ts_ctrl and main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
             isoform_switch_flag = 'isoform_switched'
         tables = []
         

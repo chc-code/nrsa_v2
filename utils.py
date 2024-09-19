@@ -19,9 +19,14 @@ import gc
 from types import SimpleNamespace
 from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
+from scipy.stats import chi2
+import warnings
+
 pw_code = os.path.dirname(os.path.realpath(__file__))
 inf_neg = float('-inf')
 bases_set = set('ATGCatgc')
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in scalar divide")
+
 
 time_cost_util = {
     'bedtools_around_enhancer_center': 0,
@@ -66,20 +71,20 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         def __init__(self, nocolor=False):
             self.nocolor = nocolor
         colors = {
-            'black': '\u001b[30;20m',
-            'red': '\u001b[31;20m',
-            'r': '\u001b[31;20m',
+            'black': '\u001b[30;1m',
+            'red': '\u001b[31;1m',
+            'r': '\u001b[31;1m',
             'bold_red': '\u001b[31;1m',
             'rb': '\u001b[31;1m',
-            'green': '\u001b[32;20m',
-            'g': '\u001b[32;20m',
+            'green': '\u001b[32;1m',
+            'g': '\u001b[32;1m',
             'gb': '\u001b[32;1m',
-            'yellow': '\u001b[33;20m',
-            'blue': '\u001b[34;20m',
-            'b': '\u001b[34;20m',
+            'yellow': '\u001b[33;1m',
+            'blue': '\u001b[34;1m',
+            'b': '\u001b[34;1m',
             'purple': '\u001b[35;1m',
             'p': '\u001b[35;1m',
-            'grey': '\u001b[38;20m',
+            'grey': '\u001b[38;1m',
         }
         FORMATS = {
             logging.WARNING: colors['purple'],
@@ -127,6 +132,7 @@ def getlogger(fn_log=None, logger_name=None, nocolor=False, verbose=False):
         fh_file.name = 'file'
         logger.addHandler(fh_file)
     return logger
+
 logger = getlogger(logger_name='NRSA')
 
 def refine_chr(chr_):
@@ -1216,6 +1222,12 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     inference = DefaultInference(n_cpus=8)
     # logger.info(counttable.head())
     # logger.info(metadata)
+    # logger.debug(data.shape)
+    # logger.debug(data.head())
+    # logger.debug(counttable.shape)
+    # logger.debug(counttable.head())
+    # logger.debug(metadata)
+    # logger.debug(ref_level)
     dds = DeseqDataSet(
         counts=counttable,
         metadata=metadata,
@@ -1527,34 +1539,28 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     data_normalized.to_csv(fn_norm, sep='\t', index=False, na_rep='NA')
 
 
-def cmhtest(row, rep1, rep2):
+def cmhtest(arr):
     """
     performs the Mantel-Haenszel test on a certain gene
     the row is like ppc_sam1, ppc_sam2, ppc_sam3, ppc_sam4, gbc_sam1, gbd_sam1, gbc_sam2, gbd_sam2, ...
     """
-    arr = []
-    n_sam = rep1 + rep2
-    for i in range(rep1):
-        pp1 = row[i] # pp condition 1
-        gb1 = row[n_sam + (i + 1) * 2 - 2] # gb condition 1
-        for j in range(rep2):
-            pp2 = row[rep1 + j]
-            gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
-            # below is the gb2 defined in R code, which is wrong, here just used to test the consistency
-            # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
-            if pp1 + pp2 + gb1 + gb2 > 0 and gb2 * pp1 > 0:
-                arr.append([[pp2, gb2], [pp1, gb1]])
     if len(arr) == 0:
         return 'NA', 'NA'
+    arr_raw = arr
     arr = np.array(arr).T
     cmt = contingency_tables.StratifiedTable(tables=arr)
     odds_ratio = cmt.oddsratio_pooled
     test_res = cmt.test_null_odds(correction=True)
-    pvalue = test_res.pvalue
+    stat_v = test_res.statistic
+    pvalue = chi2.sf(stat_v, 1) # df = 1 for contigency table of 2x2
+    # someof the pvalue is still 0, but it match with R, e.g.
+    # [[[2894.0, 1340.0], [2504.0, 3180.0]], [[4566.0, 2048.0], [2504.0, 3180.0]], [[2894.0, 1340.0], [3262.0, 3275.0]], [[4566.0, 2048.0], [3262.0, 3275.0]]]
+    # [2894.0, 1340.0, 2504.0, 3180.0, 4566.0, 2048.0, 2504.0, 3180.0, 2894.0, 1340.0, 3262.0, 3275.0, 4566.0, 2048.0, 3262.0, 3275.0]
+    
     # statistic = test_res.statistic
     # print(f'odds_ratio = {odds_ratio}, pvalue = {pvalue}, statistic = {statistic}') 
     # return log2(odd_ratio), pvalue
-    return np.log2(odds_ratio) if odds_ratio != 0 else 'NA', pvalue
+    return odds_ratio if odds_ratio != 0 else 'NA', pvalue
 
 
 def get_pvalue_2_sample(row, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc2):
@@ -1572,9 +1578,18 @@ def get_pvalue_2_sample(row, idx_ppc1, idx_ppc2, idx_gbc1, idx_gbc2):
     return pvalue
 
 def add_FDR_col(df, col_pvalue, col_FDR='FDR'):
+    df = df.reset_index(drop=True)
     pvals = df[col_pvalue].replace('NA', np.nan).dropna()
     fdr = multipletests(pvals, method='fdr_bh')[1]
-    df.loc[pvals.index, 'FDR'] = fdr
+    # if 'Ctrl_max_count' in df.columns:
+    #     logger.warning(f'df shape= {df.shape}, pvals shape = {pvals.shape}, fdr = {len(fdr)}')
+    #     logger.debug(len(pvals.index))
+    #     logger.debug(pvals.head(20))
+
+    df.loc[pvals.index, col_FDR] = fdr
+    fdr = df.pop(col_FDR)
+    idx_pvalue = df.columns.get_loc(col_pvalue)
+    df.insert(idx_pvalue + 1, col_FDR, fdr)
     return df
 
 
@@ -1610,6 +1625,23 @@ def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, fac
         data = data.iloc[:, cols_keep]
 
     col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, gbc_sum = filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=is_erna)
+
+    def cmhtest_for_pindex_change(row):
+        arr = []
+        row = list(row)
+        n_sam = rep1 + rep2
+        for i in range(rep1):
+            pp1 = row[i] # pp condition 1
+            gb1 = row[n_sam + (i + 1) * 2 - 2] # gb condition 1
+            for j in range(rep2):
+                pp2 = row[rep1 + j]
+                gb2 = row[n_sam + rep1 * 2 + (j + 1) * 2 - 2]
+                # below is the gb2 defined in R code, which is wrong, here just used to test the consistency
+                # gb2 = row[(rep2 + rep1 + j + 1) * 2 - 2]
+                if pp1 + pp2 + gb1 + gb2 > 0 and gb2 * pp1 > 0:
+                    arr.append([[pp2, gb2], [pp1, gb1]])
+        odds_ratio, pvalue = cmhtest(arr)
+        return np.log2(odds_ratio) if odds_ratio != 'NA' else 'NA', pvalue
     
     if n_sam == 2:
         # use fisher exact test
@@ -1652,9 +1684,9 @@ def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, fac
     else:
         # logger.info(data_pass.columns)
         # logger.info(data_pass.head().values)
-        # cmhtest(row, rep1, rep2)  # return = log2(odds_ratio), pvalue
         data_out = data_pass.iloc[:, idx_gene_cols].copy()
-        data_out[['log2fc', 'pvalue']] = data_pass.iloc[:, n_gene_cols:].apply(lambda x: cmhtest(list(x), rep1, rep2), axis=1, result_type='expand')
+        
+        data_out[['log2fc', 'pvalue']] = data_pass.iloc[:, n_gene_cols:].apply(cmhtest_for_pindex_change, axis=1, result_type='expand')
         data_out = add_FDR_col(data_out, 'pvalue')
         data_out = data_out.sort_values('FDR')
 
@@ -1663,8 +1695,6 @@ def change_pindex(fno_prefix, n_gene_cols, fn, fno, rep1, rep2, window_size, fac
     # logger.info(f'pindex_change done : {ana_type}')
     # logger.info(data_out.head())
 
-
-    
 def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance, tts_padding):
     strand = gene_info['strand']
     gene_raw_s, gene_raw_e = gene_info['start'], gene_info['end']
@@ -1852,7 +1882,7 @@ def process_gtf(fn_gtf, pwout):
     meta['n_merged'] = n_merged
     meta['final_n_transcripts'] = len(res)
     logger.debug(f'g@merged {n_merged} transcripts with same start and end position')
-    logger.debug(meta)
+    # logger.debug(meta)
     
     with open(fn_gtf_pkl, 'wb') as o:
         pickle.dump(res, o)
@@ -2018,6 +2048,7 @@ def process_input(pwout_raw, fls):
             res.append([fn_lb, fn_out_bed_gz])
             logger.debug(f'bed file already exist (gzip): {fn_out_bed_gz}')
             continue
+        logger.debug(f'bed file not exist yet: {fn_out_bed}')
         
         fn_for_check = re.sub(r'\.gz$', '', fn)
         if fn_for_check.endswith('.bam'):
@@ -3211,7 +3242,7 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
     n_transcript[f'keep_only_genes_with_multiple_isoforms_after filtering_count'] = len(data)
     
     tmp = json.dumps(n_transcript, indent=3)
-    logger.warning(f'{pos_in_use}\n{tmp}')
+    logger.debug(f'g@{pos_in_use}\n{tmp}')
 
     
     
@@ -3243,24 +3274,26 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
                 if v == max_v:
                     main_ts[condition].add(ts_lb)
         main_ts_ctrl, main_ts_case = main_ts['ctrl'], main_ts['case']
-        if (main_ts_ctrl or main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
+        if (main_ts_ctrl & main_ts_case) and len(main_ts_case & main_ts_ctrl) == 0:
             isoform_switch_flag = 'isoform_switched'
         tables = []
         for isam1 in sam1:
             for isam2 in sam2:
-                tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
-        
-        if len(tables) == 1:
+                n_zero = 0
+                for ts in [ts1, ts2]:
+                    for isam in [isam1, isam2]:
+                        if ts[isam] == 0:
+                            n_zero += 1
+                if n_zero < 3:
+                    tables.append([[int(ts1[isam1]), int(ts1[isam2])], [int(ts2[isam1]), int(ts2[isam2])]])
+        if len(tables) == 0:
+            pvalue = odds_ratio = np.nan
+        elif len(tables) == 1:
             vals = tables[0][0] + tables[0][1]
             pvalue = fisher.pvalue(*vals).two_tail
             odds_ratio = ratio_ctrl / ratio_case
         else:
-            # cmhtest
-            tables = np.array(tables).T
-            cmt = contingency_tables.StratifiedTable(tables=tables)
-            odds_ratio = cmt.oddsratio_pooled
-            test_res = cmt.test_null_odds(correction=True)
-            pvalue = test_res.pvalue
+            odds_ratio, pvalue = cmhtest(tables)
         return [ts1['chr'], gn, ts_id1, ts_id2, tss_pos_ts1, tss_pos_ts2, ctrl_max, ts1_mean_ctrl, ts2_mean_ctrl, ratio_ctrl, case_max, ts1_mean_case, ts2_mean_case, ratio_case, odds_ratio, pvalue, ';'.join(sorted(main_ts_ctrl)), ';'.join(sorted(main_ts_case)), isoform_switch_flag]
 
     def parse_by_gene(gn, g):
@@ -3307,8 +3340,7 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
     
     # df_isoform = df_isoform.dropna(axis=1, how='all').reset_index(drop=True)
     # logger.info(df_isoform.head())
-    idx_pval = list(df_isoform.columns).index('pvalue')
-    df_isoform.insert(idx_pval + 1, 'FDR', multipletests(df_isoform['pvalue'], method='fdr_bh')[1])
+    df_isoform = add_FDR_col(df_isoform, 'pvalue')
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
     fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_between_conditions.tsv'

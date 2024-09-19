@@ -214,6 +214,7 @@ def main(args):
         'tts_padding': 1000,
     }
     pw_bed = args.pw_bed
+    pwout = args.pwout
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
     for attr in exist:
@@ -316,7 +317,13 @@ def main(args):
     reuse_pre_count = not vars(args).get('ignore', False)
 
     fn_count_pp_gb = analysis.out_fls['count_pp_gb']
-    if not (os.path.exists(fn_count_pp_gb) and demo):
+    line_count = 0
+    if os.path.exists(fn_count_pp_gb):
+        with open(fn_count_pp_gb) as f:
+            for _ in f:
+                line_count += 1
+    
+    if not (line_count > 10 and demo):
         logger.info(f'Getting pp_gb count')
         pp_str, gb_str = process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=reuse_pre_count)
 
@@ -452,8 +459,8 @@ def main(args):
      
     fn_count_pp_gb = f'{pwout}/intermediate/count_pp_gb.txt'
     fn_count_tts = f'{pwout}/intermediate/count_tts.filtered.txt'
-    logger.debug(f'pwout = {pwout}')
-    logger.debug(vars(analysis))
+    # logger.debug(f'pwout = {pwout}')
+    # logger.debug(vars(analysis))
     get_alternative_isoform_across_conditions(fn_count_pp_gb, pwout, pw_bed, rep1, rep2)
     get_alternative_isoform_across_conditions(fn_count_tts, pwout, pw_bed, rep1, rep2, tts_padding=tts_padding)
     

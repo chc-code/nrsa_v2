@@ -3365,6 +3365,7 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
     # df_isoform = df_isoform.dropna(axis=1, how='all').reset_index(drop=True)
     # logger.info(df_isoform.head())
     df_isoform = add_FDR_col(df_isoform, 'pvalue')
+    df_isoform.sort_values(['isoform_switched', 'pvalue', 'chr', 'Gene', 'TSS_transcript1'], inplace=True)
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
     fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_between_conditions.tsv'

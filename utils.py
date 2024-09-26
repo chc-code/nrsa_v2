@@ -3097,7 +3097,10 @@ def pause_longeRNA_main(args):
         for i in f:
             chr_, s, e, strand = i[:-1].split('\t')
             ts = f'{chr_}:{s}-{e}:{strand}'
-            ires = {'chr': chr_, 'strand': strand, 'start': int(s), 'end': int(e)}
+            s, e = int(s), int(e)
+            tss, tts = (s, e) if strand == '+' else (e, s)
+            gene_name = f'{chr}:{s}-{e}:{strand}'
+            ires = {'chr': chr_, 'strand': strand, 'start': s, 'end': e, 'tss': tss, 'tts': tts, 'gene_name': gene_name}
             gtf_info[ts] = add_value_to_gtf(ires, pro_up, pro_down, gb_down_distance, tts_padding) 
     
     # prepare fasta file
@@ -3453,6 +3456,7 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
             pos = int(pos)
             print(f'{chr_}\t{pos - 1}\t{pos}\t{enhancer_id}', file=o)
 
+    retcode = os.system(f'bedtools sort -i {fn_center_bed} > {fn_center_bed}.tmp;mv {fn_center_bed}.tmp {fn_center_bed}')
     # fn_center format
     # chr	position	FONTOM5	Enhancer_ID
     # 1	737803	N	182
@@ -3544,6 +3548,10 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                 else:
                     score = 0
                 print(f'{i[:-1]}\t{score}')
+        # sort by score, last column
+        df = pd.read_csv(fn_enhancer_prior, sep='\t')
+        df.sort_values('Score', ascending=False, inplace=True)
+        df.to_csv(fn_enhancer_prior, sep='\t', na_rep='NA', index=False)
     else:
         # with case samples
         fn_change = f'{pwout}/known_gene/{linkage}_change.txt'
@@ -3640,7 +3648,7 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                 
                 
                 if enh_id in dis_to_p:
-                    bscore = weight * 2 / (1 + np.exp(0.0004054651 * dis_to_p[enh_id]))
+                    bscore = 2 / (1 + np.exp(0.0004054651 * dis_to_p[enh_id]))
                     
                 if not use_default_fscore(enh_id):
                     for metric in glist:
@@ -3661,9 +3669,15 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                         fscore = (enhchange[enh_id] / temax) * sum([_[1] for _ in glist]) / prev_max_fc
                     else:
                         fscore = abs(enhchange[enh_id] / temax) * sum([abs(_[1]) for _ in glist]) / prev_max_fc
-                print(f'{i[:-1]}\t{fscore}\t{bscore/weight}')
+                print(f'{i[:-1]}\t{fscore}\t{bscore}')
 
-    # sort 
+        df = pd.read_csv(fn_enhancer_prior, sep='\t')
+        max_fscore = df['Fscore'].max()
+        df['Score'] = df['Bscore'] * weight + df['Fscore']/max_fscore * (1 - weight)
+        df.sort_values('Score', ascending=False, inplace=True)
+        df.to_csv(fn_enhancer_prior, sep='\t', na_rep='NA', index=False)
+
+    
     # rep=0 => _sort2(fn_enhancer_piro)
     
     

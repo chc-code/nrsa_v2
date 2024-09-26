@@ -620,7 +620,7 @@ def main(args):
         logger.info(f'g@Now running prioritizing...')
         prioritize_enhancer(pwout, fn_peak, n_ctrl, n_case, args.direction, args.wt, args.fdr, args.lk)
 
-   
+    logger.debug(f'g@eRNA anlalysis finished without any error.')
     return 0
 
 if __name__ == "__main__":

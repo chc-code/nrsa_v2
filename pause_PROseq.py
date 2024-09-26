@@ -20,7 +20,7 @@ def getargs():
     ps.add_argument('-up', '-pp_up', help="""define the upstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-down', '-pp_down', help="""define the downstream of TSS as promoter (bp, default: 500)""", type=int, default=500)
     ps.add_argument('-gb', '-gb_start', help="""define the start of gene body density calculation (bp, default: 1000)""", type=int, default=1000)
-    ps.add_argument('-tts_padding', help="""define the distance upstream and downstream length around TTS to get the count (bp, default: 1000)""", default=1000, type=int)
+    ps.add_argument('-tts_padding', help="""define the downstream distance of TTS to get the TTS region count (bp, default: 2000)""", default=2000, type=int)
     ps.add_argument('-min_gene_len', help="""define the minimum length of a gene to perform the analysis (bp, default: 1000). Genes with length less than this will be ignored""", type=int, default=1000)
     ps.add_argument('-window', '-window_size', help="""define the window size (bp, default: 50)""", type=int, default=50)
     ps.add_argument('-step', '-step_size', help="""define the step size (bp, default: 5)""", type=int, default=5)
@@ -211,7 +211,7 @@ def main(args):
         'step': 5,
         'bench': False,
         'ignore': False,
-        'tts_padding': 1000,
+        'tts_padding': 2000,
     }
     pw_bed = args.pw_bed
     pwout = args.pwout

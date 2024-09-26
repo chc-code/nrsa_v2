@@ -1003,9 +1003,10 @@ def draw_heatmap_pp_change(n_gene_cols, pwout, pw_bed, fls_ctrl, fls_case, fn_ts
                 s = time.time()
                 cmd = f'bedtools coverage -a {split_bed_per_file} -b {fn_bed} -counts {coverage_by_strand_flag} -sorted > {fn_coverage_tmp}'
                 logger.debug(cmd)
-                retcode = run_shell(cmd)
+                retcode, msg_stdout, msg_stderr = run_shell(cmd, ret_info=True)
                 if retcode:
                     logger.error(f'failed to run bedtools coverage for {fn_lb}')
+                    logger.debug(msg_stderr)
                     return 1
                 # process the coverage file
                 # chr1	323932	323952	NR_028322.1_8   10
@@ -1435,7 +1436,7 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
             try:
                 res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
             except:
-                fn_deseq2_input = f'{outdir}/intermediate/deseq2.pkl'
+                fn_deseq2_input = f'{out_dir}/intermediate/deseq2.pkl'
                 
                 logger.error(f'fail to run deseq2, dumping the arguments to {fn_deseq2_input}')
                 with open(fn_deseq2_input, 'wb') as o:
@@ -1705,7 +1706,7 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance, tts_padding)
         gb_end = gene_raw_e
         tts = gene_raw_e
         strand_idx = 0
-        tts_start = gene_raw_e - tts_padding
+        tts_start = gene_raw_e
         tts_end = gene_raw_e + tts_padding
     else:
         pp_start = gene_raw_e - (pro_down - 1)
@@ -1715,7 +1716,7 @@ def add_value_to_gtf(gene_info, pro_up, pro_down, gb_down_distance, tts_padding)
         gb_end = gene_raw_e - gb_down_distance
         strand_idx = 1
         tts_start = gene_raw_s - tts_padding
-        tts_end = gene_raw_s + tts_padding
+        tts_end = gene_raw_s
     
     # modify here
     # skip the get gene_seq step
@@ -2080,19 +2081,19 @@ def process_input(pwout_raw, fls):
             ires = [fn_lb, fn_out_bed]
         elif fn_for_check.endswith('.bed'):
             # check if sorted
-            if 'sorted' in fn:
-                is_sorted = 1
-            else:
-                is_sorted = check_is_sorted(fn)
+            # if 'sorted' in fn:
+            #     is_sorted = 1
+            # else:
+            #     is_sorted = check_is_sorted(fn)
                 
-            if is_sorted:
-                fn_abs = os.path.realpath(fn)
-                fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
-                retcode = run_shell(f'ln -sf {fn_abs} {fn_dest}')
-                logger.debug(f'create symlink of {fn_abs}')
-                ires = [fn_lb, fn_dest]
-            else:
-                logger.warning(f'input bed is not sorted, now sorting...')
+            # if is_sorted:
+            #     fn_abs = os.path.realpath(fn)
+            #     fn_dest = fn_out_bed_gz if gz_suffix else fn_out_bed
+            #     retcode = run_shell(f'ln -sf {fn_abs} {fn_dest}')
+            #     logger.debug(f'create symlink of {fn_abs}')
+            #     ires = [fn_lb, fn_dest]
+            # else:
+                logger.info(f'Sorting input file: {fn}')
                 # bedtools can handle gzip format
                 cmd = f'bedtools sort -i {fn} > {fn_out_bed}'
                 retcode = run_shell(cmd)
@@ -2840,9 +2841,6 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
 
 
     # save the tts_count
-
-
-
     if save_tts_count:
         fn_tts_count = f'{pwout}/intermediate/count_tts.raw.txt'
         fn_tts_count_filtered = f'{pwout}/intermediate/count_tts.filtered.txt'
@@ -2856,12 +2854,22 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
         # 'end': 67216822}
         # first get all TSS as a sorted list
         tss_list = {}  # key is chr
+        gene_regions = {}
         for gene_info in gtf_info.values():
-            tss_list.setdefault(gene_info['chr'], set()).add(gene_info['tss'])
+            chr_ = gene_info['chr']
+            tss_list.setdefault(chr_, set()).add(gene_info['tss'])
+            gene_regions.setdefault(chr_, []).append([gene_info['start'], gene_info['end'], gene_info['gene_name']])
         tss_list = {k: sorted(v) for k, v in tss_list.items()}
+        gene_regions = {k: sorted(v, key=lambda x: x[0]) for k, v in gene_regions.items()}
+        gene_regions_start = {k: [_[0] for _ in v] for k, v in gene_regions.items()}
+        gene_regions_max_len = {k: max([_[1] - _[0] + 1 for _ in v]) for k, v in gene_regions.items()}
 
         tts_dowstream_no_tss_region_len = 2000  # exclude the trascripts which have other TSS within 2k downstream region
         n_excluded = 0
+        # also, there shouldn't be any overlap between TTS and any gene region
+        # during exluding the TTS with any other gene regions, 
+        # for hg19, 5255 transcripts are excluded (15.6%), 28519 are kept
+        
         with open(fn_tts_count, 'w') as o, open(fn_tts_count_filtered, 'w') as o1:
             print('\t'.join(tts_file_header), file=o)
             print('\t'.join(tts_file_header), file=o1)
@@ -2890,6 +2898,27 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
                         
                     if left_idx < right_idx:
                         n_excluded += 1
+                        continue
+                    
+                    # check if there are any overlap with other genes
+                    idx_tts_in_start_pos = bisect.bisect_right(gene_regions_start[chr_], tts)
+                    # iterate over the left section
+                    excluded = False
+                    gene_regions_max_len_chr = gene_regions_max_len[chr_]
+                    
+                    # here must use idx_tts_in_start_pos, ensure all regions iterate with start pos <= tts
+                    for iregion in gene_regions[chr_][:idx_tts_in_start_pos][::-1]:
+                        if iregion[1] >= tts:
+                            if gn == iregion[2]:
+                                # same gene, skip
+                                continue
+                            n_excluded += 1
+                            excluded = 1
+                            break
+                        if tts - iregion[0] > gene_regions_max_len_chr:
+                            # no overlap
+                            break
+                    if excluded:
                         continue
                     print(line, file=o1)
         
@@ -2998,7 +3027,7 @@ def pause_longeRNA_main(args):
     }
     pwout = args.pwout
     pw_bed = args.pw_bed
-    args.tts_padding = 1000
+    args.tts_padding = 2000
     missing = required_attrs - set(defined_attrs)
     exist = required_attrs & set(defined_attrs)
     for attr in exist:
@@ -3192,12 +3221,12 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
         data.loc[data.strand == '+', pos_in_use] = data.loc[data.strand == '+', 'start']
         data.loc[data.strand == '-', pos_in_use] = data.loc[data.strand == '-', 'end']
         min_sum = 50
-        distance_thres = 500
+        distance_thres = 1000 # previous is 500
     elif 'count_tts' in fn:
         out_prefix = 'TTS_'
         pos_in_use = 'TTS'
         min_sum = 80
-        distance_thres = 1000
+        distance_thres = 2000 # previous is 1k
         tmp = list(data.columns)
         idx_tts = tmp.index('TTS')
         sam_list = tmp[idx_tts+1:]
@@ -3235,13 +3264,14 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
         # below is the previous change_pp_gb code
         # the sum is about 37%-50% of the total reads count
         fn_gbc_sum = f'{pwout}/intermediate/gbc_sum.json'
-        tts_region_len = tts_padding * 2 # both upstream and downstream
+        # tts_region_len = tts_padding * 2 # both upstream and downstream
+        tts_region_len = tts_padding # currently, only use the downstream region
         with open(fn_gbc_sum) as f:
             gbc_sum = json.load(f)
         norm_density = data[sam_list]/gbc_sum * 10_000_000 / tts_region_len  # divide by region length to get density
         norm_density_mean = norm_density.sum(axis=1)/len(sam_list)
         
-        data = data.loc[norm_density_mean > 0.004]
+        data = data.loc[norm_density_mean > 0.0004]
         n_transcript[f'filter_by_count_{pos_in_use}'] = len(data)
         
 
@@ -3357,19 +3387,286 @@ def get_alternative_isoform_across_conditions(fn, pwout, pw_bed, rep1, rep2, tts
         else:
             df_isoform = pd.concat([df_isoform, tmp])
         
-    # if len(empty_df) > 0:
-    #     logger.warning(f'gn without transcripts for comparison due to {pos_in_use} too close, n = {len(empty_df)}, first 10 genes = {empty_df[:10]}')
+    if len(empty_df) > 0:
+        logger.debug(f'gn without transcripts for comparison due to {pos_in_use} too close, n = {len(empty_df)}, first 10 genes = {empty_df[:10]}')
     
-    # df_isoform = data.groupby('Gene').apply(lambda g: parse_by_gene(g.name, g))
-    
-    # df_isoform = df_isoform.dropna(axis=1, how='all').reset_index(drop=True)
-    # logger.info(df_isoform.head())
     df_isoform = add_FDR_col(df_isoform, 'pvalue')
-    df_isoform.sort_values(['isoform_switched', 'pvalue', 'chr', 'Gene', 'TSS_transcript1'], inplace=True)
+    df_isoform.sort_values(['isoform_switched', 'pvalue', 'chr', 'Gene'], ascending=[False, True, True, True], inplace=True)
     sig = df_isoform.loc[df_isoform.pvalue < 0.05]
     
     fn_isoform = f'{pwout}/intermediate/{out_prefix}alternative_isoforms_between_conditions.tsv'
     fn_sig = f'{pwout}/known_gene/{out_prefix}alternative_isoforms_between_conditions.sig.tsv'
     df_isoform.to_csv(fn_isoform, index=False, na_rep='NA', sep='\t')
     sig.to_csv(fn_sig, index=False, na_rep='NA', sep='\t')
+    
+    # export excel format, sometimes, the package dependency for excel is not installed, so use try except
+    fn_isoform_xlsx = fn_isoform.replace('.tsv', '.xlsx')
+    fn_sig_xlsx = fn_sig.replace('.tsv', '.xlsx')
+    try:
+        df_isoform.to_excel(fn_isoform_xlsx, index=False, na_rep='NA')
+        sig.to_excel(fn_sig_xlsx, index=False, na_rep='NA')
+    except:
+        logger.debug('no excel package installed, skip exporting to excel')
+        pass
+
+def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres, linkage):
+    
+    
+    # inputs
+    # fn_peak  , required if -pri set to 1. ChIP-seq peak file for the regulator of interest in bed format
+    # weight, default = 0.5  # Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)
+    # fdr = 0.05 # Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)
+    # linkage = 'gb' # gb, pp, pindex  Transcriptional changes to be used for enhancer prioritization, the value can be pp (changes in promoter-proximal region), gb (changes in gene body region), or pindex (changes in pausing index) (default: gb)
+    
+    # direction = 0  # The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)
+    pass
+
+    # variables
+    dis_to_p = {}
+
+    if linkage not in {'pp', 'gb', 'pindex'}:
+        logger.error(f'invalid linkage specified, valid = pp, gb and pindex')
+        return 1
+
+
+    # format the chromosome of the fn_peak
+    fn_peak_new = f'{pwout}/intermediate/peak_file_for_enhancer_prioritization.bed'
+    with open(fn_peak) as f, open(fn_peak_new, 'w') as o:
+        for i in f:
+            chr_, line = i.split('\t', 1)
+            chr_ = refine_chr(chr_)
+            o.write(f'{chr_}\t{line}')
+
+    # get the nearest peak position for the center
+    fn_center = f'{pwout}/eRNA/Enhancer_center.txt'  # previous is intermediate/center.tmp
+    fn_enhancer = f'{pwout}/eRNA/Enhancer.txt'
+    fn_enhancer_prior = f'{pwout}/eRNA/Enhancer.prioritized.txt'
+    
+    fn_center_bed = f'{pwout}/intermediate/center.tmp'
+    fn_nearest_peak = f'{pwout}/intermediate/nearest.tmp'  # last column is distance
+
+    with open(fn_center) as f, open(fn_center_bed, 'w') as o:
+        f.readline()
+        for i in f:
+            line = i.strip().split('\t')
+            chr_, pos, enhancer_id = line[0], line[1], line[3]
+            pos = int(pos)
+            print(f'{chr_}\t{pos - 1}\t{pos}\t{enhancer_id}', file=o)
+
+    # fn_center format
+    # chr	position	FONTOM5	Enhancer_ID
+    # 1	737803	N	182
+    # 1	2377977	N	126
+
+    cmd = f'bedtools closest -a {fn_center} -b {fn_peak_new} -d > {fn_nearest_peak}'
+    retcode = os.system(cmd)
+    with open(fn_nearest_peak) as f:
+        for i in f:
+            line = i[:-1].split('\t')
+            dist = int(line[-1])
+            if dist == -1:
+                continue
+            enhancer_id = line[3]
+            if enhancer_id not in dis_to_p:
+                dis_to_p[enhancer_id] = dist
+            elif dist < dis_to_p[enhancer_id]:
+                dis_to_p[enhancer_id] = dist
+            
+    
+    
+    def process_line(line, gn, idx_fc, idx_fdr, prev_max_fc, gmax, tchange, tfdr):
+        fc = line[idx_fc]
+        gmax_v = None
+        if fc not in {'NA', 'Inf', '-Inf'}:
+            try:
+                fc = float(fc)
+                fc_abs = abs(fc)
+            except:
+                logger.error(f'invalid logFC value found, line = {line}\nexit now...')
+                sys.exit(1)
+            if fc_abs > prev_max_fc:
+                prev_max_fc = fc_abs
+        else:
+            fc = {'Inf': 1000, '-Inf': -1000, 'NA': 'NA'}[fc]
+            gmax_v = {'Inf': 1, '-Inf': -1, 'NA': None}[fc]
+            
+        if gmax_v is not None:
+            gmax[gn] = gmax_v
+
+        if idx_fdr is not None:
+            fdr = line[idx_fdr]
+            if fdr in {'NA', ''}:
+                fdr = 'NA'
+            else:
+                fdr = float(fdr)
+            tfdr[gn] = fdr
+
+        if gn not in tchange:
+            tchange[gn] = fc
+        elif tchange[gn] == 'NA' or fc_abs > abs(tchange[gn]):
+            tchange[gn] = fc
+        
+        return prev_max_fc
+    
+    def get_idx(fn, header):
+        status = 0
+        if 'log2FoldChange' in header:
+            idx_fc = header.index('log2FoldChange')
+        elif 'log2fc' in header:
+            idx_fc = header.index('log2fc')
+        else:
+            logger.error(f'log2fc column not foun din {fn}, header = \n{header}')
+            status = 1
+        if rep1 + rep2 == 2:
+            idx_fdr = None
+        elif 'FDR' in header:
+            idx_fdr = header.index('FDR')
+        elif 'padj' in header:
+            idx_fdr = header.index('padj')
+        else:
+            logger.error(f'FDR column not found in {fn} header: \n{header}')
+            status = 1
+        
+        return status, idx_fc, idx_fdr
+
+
+    # no case samples
+    if rep2 == 0:
+        with open(fn_enhancer) as f, open(fn_enhancer_prior, 'w') as o:
+            header = f.readline()[:-1]
+            print(f'{header}\tScore', file=o)
+            # Enhancer_ID	chr	start	end	center
+            for i in f:
+                line = i.strip().split('\t', 1)
+                enhancer_id = line[0]
+                if enhancer_id in dis_to_p:
+                    score = 2 / (1 + np.exp(0.0004054651 * dis_to_p[enhancer_id]))
+                else:
+                    score = 0
+                print(f'{i[:-1]}\t{score}')
+    else:
+        # with case samples
+        fn_change = f'{pwout}/known_gene/{linkage}_change.txt'
+        fn_enhancer_change = f'{pwout}/eRNA/Enhancer_change.txt'
+        # pp, gb, header = 
+        # Transcript	Gene	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
+        # pindex, header = 
+        # Transcript	Gene	log2fc	pvalue	FDR
+
+        prev_max_fc = 0  # prev max abs(log2fc)
+        gmax = {}
+        tchange = {}
+        tfdr = {}
+        with open(fn_change) as f:
+            header = f.readline()[:-1].split('\t')
+            status, idx_fc, idx_fdr = get_idx(header)
+            if status == 1:
+                return 1
+            for i in f:
+                line = i[:-1].split('\t')
+                its, gn = line[:2]
+                if not gn:
+                    gn = its
+                prev_max_fc = process_line(line, gn, idx_fc, idx_fdr, prev_max_fc, gmax, tchange, tfdr)
+            for gn, sign in gmax.items():
+                gmax[gn] = sign * prev_max_fc
+    
+    
+        # process enhaner_change
+        # Enhancer_ID	chr	start	end	baseMean	log2FoldChange	lfcSE	stat	pvalue	padj
+        temax = 0
+        emax = {}
+        enhchange = {}
+        enhfdr = {}
+        with open(fn_enhancer_change) as f:
+            header = f.readline()[:-1].split('\t')
+            status, idx_fc, idx_fdr = get_idx(header)
+            if status == 1:
+                return 1
+            for i in f:
+                line = i[:-1].split('\t')
+                enh_id = line[0]
+                temax = process_line(line, enh_id, idx_fc, idx_fdr, temax, emax, enhchange, enhfdr)
+        for enh_id, sign in emax.items():
+            emax[enh_id] = sign * temax
+        
+        
+        
+        # add bscore and fscore
+        n_sam = rep1 + rep2
+        if n_sam == 2:
+            comp_thres = 0.59
+            comp_dict_gene = tchange
+            def skip_func(gn):
+                if gn == 'NA' or gn not in tchange or comp_dict_gene[gn] == 'NA':
+                    return 1
+                if abs(comp_dict_gene[gn]) < comp_thres:
+                    return 1
+                return 0
+            def use_default_fscore(gn):
+                if enhchange[gn] == 'NA' or (abs(enhchange[gn]) < comp_thres):
+                    return 1
+                return 0
+        else:
+            comp_thres = fdr_thres
+            comp_dict_gene = tfdr
+            def skip_func(gn):
+                if gn == 'NA' or gn not in tchange or comp_dict_gene[gn] == 'NA':
+                    return 1
+                if comp_dict_gene[gn] > comp_thres:
+                    return 1
+                return 0
+            def use_default_fscore(gn):
+                if enhfdr[gn] == 'NA' or (enhfdr[gn] > comp_thres):
+                    return 1
+                return 0
+
+        
+        with open(fn_enhancer) as f, open(fn_enhancer_prior, 'w') as o:
+            # Enhancer_ID	chr	start	end	center	FANTOM5	associated_gene-FANTOM5	associated_gene-50kb	associated_gene-4DGenome	Cell_Tissue	Detection_method	PMID	closest_gene	distance
+            header = f.readline()[:-1]
+            print(f'{header}\tFscore\tBscore', file=o)
+            for i in f:
+                line = i[:-1].split('\t')
+                enh_id = line[0]
+                bscore = 0
+                fscore = 0
+                glist_fantom5 = list(set(re.split(r'[,;]', line[6])))
+                glist_50k = line[7].split(',')
+                glist_4d = line[8].split(',')
+                closest_gn = [line[12]]
+                
+                glist = [[glist_fantom5, 0], [glist_50k, 0], [glist_4d, 0], [closest_gn, 0]]
+                
+                
+                if enh_id in dis_to_p:
+                    bscore = weight * 2 / (1 + np.exp(0.0004054651 * dis_to_p[enh_id]))
+                    
+                if not use_default_fscore(enh_id):
+                    for metric in glist:
+                        iglist, max_fc = metric
+                        for gn in iglist:
+                            skip_flag = skip_func(gn)
+                            if skip_flag:
+                                continue
+                            if direction in {1, -1}:
+                                concord_enh_gene = enhchange[enh_id] * tchange[gn] * direction
+                            else:
+                                concord_enh_gene = 1
+                            if concord_enh_gene > 0:
+                                if abs(tchange[gn]) > abs(metric[1]):
+                                    metric[1] = tchange[gn]
+                    
+                    if direction in {1, -1}:
+                        fscore = (enhchange[enh_id] / temax) * sum([_[1] for _ in glist]) / prev_max_fc
+                    else:
+                        fscore = abs(enhchange[enh_id] / temax) * sum([abs(_[1]) for _ in glist]) / prev_max_fc
+                print(f'{i[:-1]}\t{fscore}\t{bscore/weight}')
+
+    # sort 
+    # rep=0 => _sort2(fn_enhancer_piro)
+    
+    
+    
+    
     

@@ -9,7 +9,7 @@ def getargs():
     ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
     ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
-
+    ps.add_argument('-batches', '-batch', '-b',  help="""Optional, if -in1 / -in2 is specified, and the need to adjust the batch effect, add the batch label for each sample. the total argument number should match with in1 + in2, sep = space""", nargs='*')
     ps.add_argument('-pwout', '-output', help="""required, output/work directory""", required=True)
     ps.add_argument('-organism', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
 
@@ -46,7 +46,7 @@ import json
 import traceback
 import gc
 
-from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table, get_alternative_isoform_across_conditions
+from utils import check_dependency, build_idx_for_fa,  process_gtf,  change_pp_gb, change_pindex, draw_box_plot, draw_heatmap_pindex, draw_heatmap_pp_change, get_FDR_per_sample, pre_count_for_bed, add_value_to_gtf, time_cost_util, parse_design_table, get_alternative_isoform_across_conditions, build_design_table
 
 from utils import Analysis, process_bed_files
 sys.dont_write_bytecode = True
@@ -210,6 +210,7 @@ def main(args):
         'window': 50,
         'step': 5,
         'bench': False,
+        'batches': None,
         'ignore': False,
         'tts_padding': 2000,
     }
@@ -235,11 +236,25 @@ def main(args):
         sys.exit(1)
     demo = vars(args).get('demo', False)
 
+    for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [pwout, f'{pwout}/intermediate', f'{pwout}/known_gene']):
+        if not os.path.exists(d):
+            logger.debug(f'Making {lb} directory: {d}')
+            os.makedirs(d)
+
+
+    build_design_table(pwout, args.in1, args.in2, args.batches)
+
+    # logger.warning('debug adding batches to design table, modify here')
+    
+    # fn_metadata = f'{pwout}/intermediate/design_table_for_deseq2.txt'
+    # os.system(f'cat {fn_metadata}')
+    
+    # sys.exit(1)
+
     analysis = Analysis(args, skip_get_mapped_reads=demo)
     if analysis.status:
         logger.error("Exit now")
         sys.exit(1)
-
     rep1 = len(analysis.control_bed)
     rep2 = len(analysis.case_bed) if analysis.case_bed else 0
     window_size = analysis.config['window_size']
@@ -252,7 +267,7 @@ def main(args):
 
     # process the GTF file
     logger.info(f"Processing GTF file: {analysis.ref['gtf']}")
-    gtf_info, fn_tss, fn_tss_tts, err = process_gtf(analysis.ref['gtf'], pwout=analysis.out_dir)
+    gtf_info, fn_tss, fn_tss_tts, err = process_gtf(analysis.ref['gtf'], pwout=analysis.pwout)
 
     err_total = sum(err.values())
     if err_total:
@@ -408,7 +423,7 @@ def main(args):
     fn_gbc_sum = f'{pwout}/intermediate/gbc_sum.json'
     if not (os.path.exists(fno_ppchange) and os.path.exists(fno_gbchange) and os.path.exists(fn_gbc_sum) and demo):
         logger.info('Change_pp_gb')
-        change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
+        change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.pwout, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=analysis.longerna)
     else:
         logger.debug(f'skip change_pp_gb due to demo mode')
     
@@ -430,7 +445,7 @@ def main(args):
 
     # boxplot
     logger.info(f'plotting boxplot')
-    draw_box_plot(n_gene_cols, analysis.out_dir, 'boxplot', rep1, rep2)
+    draw_box_plot(n_gene_cols, analysis.pwout, 'boxplot', rep1, rep2)
     if rep2 > 0:
         # change_pindex
         logger.debug('Running change_pindex')
@@ -439,15 +454,15 @@ def main(args):
         
         # simple_heatmap
         logger.info(f'plotting pindex heatmap')
-        draw_heatmap_pindex(analysis.out_dir)
+        draw_heatmap_pindex(analysis.pwout)
         
 
         # heatmap
         logger.info(f'plotting heatmap for pp_change')
-        # "perl heatmap.pl -w $out_dir -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
+        # "perl heatmap.pl -w $pwout -i $list -in1 $cond1_str -in2 $cond2_str -m $genome -n $tname";
         fno = f'{pwout}/known_gene/heatmap.pdf'
         if not (os.path.exists(fno) and demo):
-            draw_heatmap_pp_change(n_gene_cols, analysis.out_dir, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
+            draw_heatmap_pp_change(n_gene_cols, analysis.pwout, pw_bed,  fls_ctrl=analysis.control_bed, fls_case=analysis.case_bed, fn_tss=fn_tss, region_size=5000, bin_size=200, outname='heatmap', skipe_bedtools_coverage=demo)
         else:
             logger.debug(f'skip plot heatmap due to demo mode')
 
@@ -496,7 +511,6 @@ if __name__ == "__main__":
     for comp_str, iargs in arg_list:
         if comp_str:
             logger.info(f'g@now running {comp_str}')
-        logger.debug(vars(iargs))
         try:
             retcode = main(iargs) or retcode
         except:

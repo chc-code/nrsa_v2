@@ -161,12 +161,12 @@ def build_idx_for_fa(fn_fa):
     # check if have write permission to the folder of the fa file
     if not os.access(os.path.dirname(fn_fa), os.W_OK):
         home = os.path.expanduser("~")
-        fa_out_dir = f'{home}/.nrsa'
-        os.makedirs(fa_out_dir, exist_ok=True)
+        fa_pwout = f'{home}/.nrsa'
+        os.makedirs(fa_pwout, exist_ok=True)
     else:
-        fa_out_dir = os.path.dirname(fn_fa)
+        fa_pwout = os.path.dirname(fn_fa)
         
-    fn_idx = f'{fa_out_dir}/{lb}.idx.pkl'
+    fn_idx = f'{fa_pwout}/{lb}.idx.pkl'
     if os.path.exists(fn_idx):
         logger.debug(f'loading fasta index file: {fn_idx}')
         with open(fn_idx, 'rb') as f:
@@ -1171,7 +1171,7 @@ def get_FDR_per_sample(fn_lb, fn_peak, fn_fdr, pause_index_str):
 
 
 def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads=10, filter_out_low_expression=False, 
-               size_factors_in=None, size_factor_only=False):
+               size_factors_in=None, size_factor_only=False, test_level=None):
     """
     A count matrix of shape ‘number of samples’ x ‘number of genes’, containing read counts (non-negative integers),
     Metadata (or “column” data) of shape ‘number of samples’ x ‘number of variables’, containing sample annotations that will be used to split the data in cohorts.  rows = sample, columns = gene
@@ -1209,9 +1209,16 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     
     counttable = counttable.T
     metadata.index = counttable.index
+    if 'batch' in metadata.columns:
+        with_batch = True
+    else:
+        with_batch = False
+    
+    logger.debug(f'{list(metadata.columns)} , with_batch = {with_batch}')
     
     # remove samples for which annotations are missing and exclude genes with very low levels of expression
     col_condition = 'condition'
+    design_factors = [col_condition, 'batch'] if with_batch else col_condition
     sample_to_keep = list(~metadata[col_condition].isna())
     counttable = counttable.loc[sample_to_keep, :]
     metadata = metadata.loc[sample_to_keep, :]
@@ -1229,10 +1236,26 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # logger.debug(counttable.head())
     # logger.debug(metadata)
     # logger.debug(ref_level)
+    levels = set(metadata[col_condition])
+    levels.remove(ref_level)
+    test_level_l = list(levels)
+    
+    if test_level:
+        pass
+    elif len(test_level_l) == 1:
+        test_level = test_level_l[0]
+    elif len(test_level_l) == 0:
+        logger.error(f'no test level found in metadata, column = {col_condition}: \n{metadata}')
+        return None, np.array([1, 1])
+    elif len(test_level_l) > 0:
+        logger.error(f'Test level not specified, column = {col_condition}: \n{metadata}')
+        return None, np.array([1, 1])
+    
+    
     dds = DeseqDataSet(
         counts=counttable,
         metadata=metadata,
-        design_factors=col_condition, # compare samples based on condition
+        design_factors=design_factors, # compare samples based on condition
         ref_level=[col_condition, ref_level],
         refit_cooks=True,
         inference=inference,
@@ -1274,7 +1297,7 @@ def run_deseq2(n_gene_cols, data, metadata, ref_level, col_group=None, min_reads
     # varm = gene matrix, keys = dispersions, LFC
 
     # get stat
-    stat_res = DeseqStats(dds, inference=inference)
+    stat_res = DeseqStats(dds, inference=inference, contrast=[col_condition, test_level, ref_level])
     stat_res.summary()
     
     # the logFC is the same as R, but the p-value and padj are slightly different
@@ -1362,7 +1385,7 @@ def filter_pp_gb(data, n_gene_cols, rep1, rep2, skip_filtering=False):
 
     return col_idx, sam_list, idx_ppc_combined, idx_gbc_combined, idx_gbd_combined, idx_gene_cols, data_pass, data_drop, sum_gbc
 
-def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None, islongerna=False):
+def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, pwout, window_size, factor_flag, factor1=None, factor2=None, islongerna=False):
     # data = processed, count_pp_gb.txt, already removed the chr, start, end  and strand column, and already collapsed the transcripts with the same gene
     # if factor1, factor2 is not None, it should be a list
     # n_gene_cols = 2 for known gene, and 1 for eRNA
@@ -1372,9 +1395,9 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         factor2 = []
         
     if islongerna:
-        pw_change_prefix = f'{out_dir}/eRNA/longeRNA-'
+        pw_change_prefix = f'{pwout}/eRNA/longeRNA-'
     else:
-        pw_change_prefix = f'{out_dir}/known_gene/'
+        pw_change_prefix = f'{pwout}/known_gene/'
 
     n_sam = rep1 + rep2
     skip_filtering = islongerna # skip if islongerna
@@ -1386,9 +1409,9 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     # logger.warning(data_drop.head())
     
     if not islongerna:
-        data_pass.iloc[:, idx_gene_cols].to_csv(f'{out_dir}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
+        data_pass.iloc[:, idx_gene_cols].to_csv(f'{pwout}/intermediate/active_gene.txt', sep='\t', index=False, header=False, na_rep='NA')
         
-        fn_gbc_sum = f'{out_dir}/intermediate/gbc_sum.json'
+        fn_gbc_sum = f'{pwout}/intermediate/gbc_sum.json'
         with open(fn_gbc_sum, 'w')  as o:
             json.dump(sum_gbc, o)    
     data_pass_pp = data_pass.iloc[:, idx_gene_cols + idx_ppc_combined] # datapp in R
@@ -1397,16 +1420,11 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
     data_pass_gb = data_pass.iloc[:, idx_gene_cols + idx_gbc_combined] # datagb in R
     data_drop_gb = data_drop.iloc[:, idx_gene_cols + idx_gbc_combined] # data_gb in R
     
-    if rep2 == 0:
-        # case only, the meta data is just the dummy value, won't be used for deseq, just for get the sizefactors
-        metadata = pd.DataFrame({
-            'condition': ['control'] + ['case'] * (rep1 - 1),
-        })
-    else:
-        metadata = pd.DataFrame({
-            'condition': ['control'] * rep1 + ['case'] * rep2,
-        })
+    fn_metadata = f'{pwout}/intermediate/design_table_for_deseq2.txt'
+    metadata = pd.read_csv(fn_metadata, sep='\t', index_col=0)
     ref_level = 'control'
+    test_level = 'case'
+
 
     # with normalization factors
     if factor_flag == 1:
@@ -1427,16 +1445,20 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         # gb change
         logger.info('running DESeq2')
         with HiddenPrints():
-            res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors)
+            res_df, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, test_level=test_level)
+            
+            if res_df is None:
+                sys.exit(1)
+            
             res_df_full = pd.concat([res_df, data_drop_gb.iloc[:, idx_gene_cols]])
             
             res_df_full.to_csv(f'{pw_change_prefix}gb_change.txt', sep='\t', index=False, na_rep='NA')
             
             # pp change
             try:
-                res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors)
+                res_df, _ = run_deseq2(n_gene_cols, data_pass_pp, metadata, ref_level=ref_level, size_factors_in=size_factors, test_level=test_level)
             except:
-                fn_deseq2_input = f'{out_dir}/intermediate/deseq2.pkl'
+                fn_deseq2_input = f'{pwout}/intermediate/deseq2.pkl'
                 
                 logger.error(f'fail to run deseq2, dumping the arguments to {fn_deseq2_input}')
                 with open(fn_deseq2_input, 'wb') as o:
@@ -1451,18 +1473,18 @@ def change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, 
         size_factors = 1 # size factor is 1 for the only sample
     elif rep2 == 0:
         # control only, multiple ctrol samples
-        _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True)
+        _, size_factors = run_deseq2(n_gene_cols, data_pass_gb, metadata, ref_level, size_factors_in=size_factors, size_factor_only=True, test_level=test_level)
 
     norm_factors = 1 / size_factors
     # get the normalized data in other function, because we need the chr start end strand information, and the data here is already processed
     # save normalization factors
     if not islongerna:
         nf = pd.DataFrame({'sample': sam_list, 'nfactor': norm_factors})
-        nf.to_csv(f'{out_dir}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
+        nf.to_csv(f'{pwout}/intermediate/nf.txt', sep='\t', index=False, na_rep='NA')
     return size_factors, sam_list
     
 
-def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0, islongerna=False):
+def change_pp_gb(n_gene_cols, fn, pwout, rep1, rep2, window_size, factor1=None, factor2=None, factor_flag=0, islongerna=False):
     """
     adapted from Rscript change_pp_gb.R
     if factor_flag == 1, then will use these normalization factors, otherwise , will use DESeq2 to normalize the data
@@ -1483,10 +1505,10 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     if err:
         return 1
     if islongerna:
-        pw_change_prefix = f'{out_dir}/eRNA/longeRNA-'
+        pw_change_prefix = f'{pwout}/eRNA/longeRNA-'
         n_extra_cols = 0 # chr, start, end, strand
     else:
-        pw_change_prefix = f'{out_dir}/known_gene/'
+        pw_change_prefix = f'{pwout}/known_gene/'
         n_extra_cols = 4 # chr, start, end, strand
 
     fn_norm = f'{pw_change_prefix}normalized_pp_gb.txt'
@@ -1522,8 +1544,8 @@ def change_pp_gb(n_gene_cols, fn, out_dir, rep1, rep2, window_size, factor1=None
     
     n_sam = rep1 + rep2
     
-    # (rep1, rep2, data, out_dir, window_size, factor_flag, factor1=None, factor2=None)
-    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, out_dir, window_size, factor_flag, factor1, factor2, islongerna=islongerna)
+    # (rep1, rep2, data, pwout, window_size, factor_flag, factor1=None, factor2=None)
+    size_factors, sam_list = change_pp_gb_with_case(n_gene_cols, rep1, rep2, data, pwout, window_size, factor_flag, factor1, factor2, islongerna=islongerna)
 
     # get the normalized data
     n_prev_cols = n_gene_cols + n_extra_cols
@@ -1767,18 +1789,18 @@ def process_gtf(fn_gtf, pwout):
     # check if have write permission to the folder of the gtf file
     if not os.access(os.path.dirname(fn_gtf), os.W_OK):
         home = os.path.expanduser("~")
-        gtf_out_dir = f'{home}/.nrsa'
-        os.makedirs(gtf_out_dir, exist_ok=True)
+        gtf_pwout = f'{home}/.nrsa'
+        os.makedirs(gtf_pwout, exist_ok=True)
     else:
-        gtf_out_dir = os.path.dirname(fn_gtf)
+        gtf_pwout = os.path.dirname(fn_gtf)
     
     if 'gtf' not in fn_gtf.rsplit('.', 2)[-2:]:
         logger.error(f'the gtf file should have the extension of .gtf: {fn_gtf}')
         sys.exit(1)
         return None, fn_tss, fn_tss_tts, err
     
-    fn_gtf_pkl = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_info.pkl'
-    fn_gtf_meta_json = f'{gtf_out_dir}/{fn_gtf_lb}.gtf_meta.json'
+    fn_gtf_pkl = f'{gtf_pwout}/{fn_gtf_lb}.gtf_info.pkl'
+    fn_gtf_meta_json = f'{gtf_pwout}/{fn_gtf_lb}.gtf_meta.json'
     if os.path.exists(fn_gtf_pkl):
         logger.debug(f'loading gtf from pickle: {fn_gtf_pkl}')
         
@@ -2574,15 +2596,17 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
         else:
             # run deseq2
             n_gene_cols = 4
-            metadata = pd.DataFrame({
-                'condition': ['control'] * n_ctrl + ['case'] * n_case,
-            })
-            
+
+            fn_metadata = f'{pwout}/intermediate/design_table_for_deseq2.txt'
+            metadata = pd.read_csv(fn_metadata, sep='\t', index_col=0)
+
             ref_level = 'control'
+            test_level = 'case'
+            
             size_factors_in = 1 / np.array([factors_d[sam_lb] for sam_lb in sam_ctrl + sam_case])
             with HiddenPrints():
                 res_df, size_factors = run_deseq2(n_gene_cols, data, metadata, ref_level, 
-                size_factors_in=size_factors_in)
+                size_factors_in=size_factors_in, test_level=test_level)
                 res_df.to_csv(fn_change, sep='\t', index=False, na_rep='NA')
 
     for sam_lb, nf in factors_d.items():
@@ -2598,15 +2622,15 @@ class Analysis:
         
         # folders
         self.bin_dir = os.path.dirname(os.path.realpath(__file__))
-        self.out_dir = args.pwout or os.getcwd()
+        self.pwout = args.pwout or os.getcwd()
         self.pwout_raw = args.pwout_raw
         self.pw_bed = f'{args.pwout_raw}/bed'
-        self.inter_dir = os.path.join(self.out_dir, 'intermediate')
-        self.known_gene_dir = os.path.join(self.out_dir, 'known_gene')
+        self.inter_dir = os.path.join(self.pwout, 'intermediate')
+        self.known_gene_dir = os.path.join(self.pwout, 'known_gene')
         self.longerna = is_long_eRNA # toggle if this is long eRNA
         self.skip_get_mapped_reads = skip_get_mapped_reads
 
-        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.out_dir, self.inter_dir, self.known_gene_dir]):
+        for lb, d in zip(['Output', 'Intermediate', 'Known Genes'], [self.pwout, self.inter_dir, self.known_gene_dir]):
             if not os.path.exists(d):
                 logger.debug(f'Making {lb} directory: {d}')
                 os.makedirs(d)
@@ -2745,7 +2769,7 @@ def process_bed_files(analysis, fls, gtf_info, fa_idx, fh_fa, reuse_pre_count=Fa
     bin_size = analysis.bin_size
     # ['ppc', 'ppm', 'ppd', 'pps', 'gbc', 'gbm', 'gbd', 'pauseIndex']
     fail_to_retrieve_seq = 0
-    pwout = analysis.out_dir
+    pwout = analysis.pwout
     window_size, step_size = analysis.config['window_size'], analysis.config['step']
     pw_bed = analysis.pw_bed
     n = 0
@@ -2953,6 +2977,7 @@ def parse_design_table(args):
         new_arg_list = []
         err = 0
         with open(args.design_table) as f:
+            batch_map = {}
             for line in f:
                 if line.startswith('#'):
                     continue
@@ -2965,8 +2990,8 @@ def parse_design_table(args):
                     groups_in_comparison |= set(tmp)
                 else:
                     tmp = line.strip().split('\t')
-                    if len(tmp) != 2:
-                        logger.error(f"Invalid line: {line}, should have 2 columns, col1 = file path, col2 = group name")
+                    if len(tmp) not in {2, 3}:
+                        logger.error(f"Invalid line: {line}, should have 2 or 3 columns, col1 = file path, col2 = group name, col3 = optional, the batch of this sample")
                         err = 1
                         continue
                     fn = os.path.realpath(tmp[0])
@@ -2975,6 +3000,12 @@ def parse_design_table(args):
                         err = 1
                         continue
                     group_info.setdefault(tmp[1], []).append(fn)
+                    if len(tmp) == 3:
+                        batch_map[fn] = tmp[2] or 'empty'
+            total_fls = sum([len(_) for _ in group_info.values()])
+            if batch_map and len(batch_map) != total_fls:
+                logger.error(f'Not all samples have the batch information (3rd column), total files = {total_fls}, with batch info = {len(batch_map)}, without batch info = {total_fls - len(batch_map)}')
+                err = 1
             if err:
                 logger.error('quit now.')
                 sys.exit(1)
@@ -2992,9 +3023,15 @@ def parse_design_table(args):
                     update_dict = {}
                     update_dict['in1'] = group_info[control]
                     update_dict['in2'] = group_info[case] or None
+                    if batch_map:
+                        all_sams = [_ for _ in update_dict['in1']]
+                        if update_dict['in2']:
+                            all_sams += [_ for _ in update_dict['in2']]
+                        update_dict['batches'] = [batch_map[_] for _ in all_sams]
+                    
                     comp_str = control if case == 'null' else f'{case}_vs_{control}'
-                    out_dir = os.path.join(pwout_raw, comp_str)
-                    update_dict['pwout'] = out_dir
+                    pwout = os.path.join(pwout_raw, comp_str)
+                    update_dict['pwout'] = pwout
                     
                     args_new = get_new_args(args, update_dict)
                     new_arg_list.append([comp_str, args_new])
@@ -3002,6 +3039,50 @@ def parse_design_table(args):
     else:
         logger.error(f"No input files provided, either use -in1 / in2 or provide a design table, input arguments = {vars(args)}")
         sys.exit(1)
+
+
+def check_full_rank(condition, batches):
+    """
+    if the batch is fully correlated with condition, then, there is no need to add the batch column
+    """
+    df = pd.DataFrame({'condition': condition, 'batch': batches})
+    design_matrix = pd.get_dummies(df, drop_first=False)
+    design_matrix = design_matrix.astype(float)
+    rank = np.linalg.matrix_rank(design_matrix.values)
+    return rank == design_matrix.shape[1]
+
+
+
+def build_design_table(pwout, in1, in2, batches):
+    fn_metadata = f'{pwout}/intermediate/design_table_for_deseq2.txt'
+    logger.debug(f'building design table for deseq2: {fn_metadata}')
+    in2 = in2 or []
+    fls = in1 + in2
+    fls_lb = [get_lb(_) for _ in fls]
+    rep1, rep2 = len(in1), len(in2)
+    condition = ['control'] + ['case'] * (rep1 - 1) if rep2 == 0 else ['control'] * rep1 + ['case'] * rep2
+    if batches and len(batches) != len(fls):
+        logger.error(f'batch number ({len(batches)}) not match with total sample number ({len(fls)}! exit')
+        sys.exit(1)
+        
+    # check for fully ranked
+    if batches:
+        is_full_rank = check_full_rank(condition, batches)
+        if not is_full_rank:
+            logger.warning(f'Batch information provided, however, the model matrix is not full rank, condition column is fully correlated with batch column, will remove the batch column.')
+            batches = None
+            
+        
+    with open(fn_metadata, 'w') as o:
+        if batches:
+            print(f'\tcondition\tbatch', file=o)
+            for lb, icond, ibatch in zip(fls_lb, condition, batches):
+                print(f'{lb}\t{icond}\t{ibatch}', file=o)
+        else:
+            print(f'\tcondition', file=o)
+            for lb, icond in zip(fls_lb, condition):
+                print(f'{lb}\t{icond}', file=o)
+
 
 def pause_longeRNA_main(args):
     """
@@ -3172,7 +3253,7 @@ def pause_longeRNA_main(args):
     # modify here
     logger.info('Change_pp_gb')
     # logger.warning('modify here')
-    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.out_dir, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=True)
+    change_pp_gb(n_gene_cols, fn_count_pp_gb, analysis.pwout, rep1, rep2, window_size, factor1=factor1, factor2=factor2, factor_flag=factor_flag, islongerna=True)
     
     logger.debug('Dump pindex.txt')
     header_extra = []
@@ -3457,12 +3538,15 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
             print(f'{chr_}\t{pos - 1}\t{pos}\t{enhancer_id}', file=o)
 
     retcode = os.system(f'bedtools sort -i {fn_center_bed} > {fn_center_bed}.tmp;mv {fn_center_bed}.tmp {fn_center_bed}')
+    if retcode:
+        logger.error(f'fail to sort file {fn_center_bed}')
     # fn_center format
     # chr	position	FONTOM5	Enhancer_ID
     # 1	737803	N	182
     # 1	2377977	N	126
 
-    cmd = f'bedtools closest -a {fn_center} -b {fn_peak_new} -d > {fn_nearest_peak}'
+    cmd = f'bedtools closest -a {fn_center_bed} -b {fn_peak_new} -d > {fn_nearest_peak}'
+    logger.debug(cmd)
     retcode = os.system(cmd)
     with open(fn_nearest_peak) as f:
         for i in f:
@@ -3476,7 +3560,6 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
             elif dist < dis_to_p[enhancer_id]:
                 dis_to_p[enhancer_id] = dist
             
-    
     
     def process_line(line, gn, idx_fc, idx_fdr, prev_max_fc, gmax, tchange, tfdr):
         fc = line[idx_fc]
@@ -3533,7 +3616,6 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
         
         return status, idx_fc, idx_fdr
 
-
     # no case samples
     if rep2 == 0:
         with open(fn_enhancer) as f, open(fn_enhancer_prior, 'w') as o:
@@ -3547,7 +3629,7 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                     score = 2 / (1 + np.exp(0.0004054651 * dis_to_p[enhancer_id]))
                 else:
                     score = 0
-                print(f'{i[:-1]}\t{score}')
+                print(f'{i[:-1]}\t{score}', file=o)
         # sort by score, last column
         df = pd.read_csv(fn_enhancer_prior, sep='\t')
         df.sort_values('Score', ascending=False, inplace=True)
@@ -3567,7 +3649,7 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
         tfdr = {}
         with open(fn_change) as f:
             header = f.readline()[:-1].split('\t')
-            status, idx_fc, idx_fdr = get_idx(header)
+            status, idx_fc, idx_fdr = get_idx(fn_change, header)
             if status == 1:
                 return 1
             for i in f:
@@ -3588,7 +3670,7 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
         enhfdr = {}
         with open(fn_enhancer_change) as f:
             header = f.readline()[:-1].split('\t')
-            status, idx_fc, idx_fdr = get_idx(header)
+            status, idx_fc, idx_fdr = get_idx(fn_enhancer_change, header)
             if status == 1:
                 return 1
             for i in f:
@@ -3597,7 +3679,6 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                 temax = process_line(line, enh_id, idx_fc, idx_fdr, temax, emax, enhchange, enhfdr)
         for enh_id, sign in emax.items():
             emax[enh_id] = sign * temax
-        
         
         
         # add bscore and fscore
@@ -3669,7 +3750,22 @@ def prioritize_enhancer(pwout, fn_peak, rep1, rep2, direction, weight, fdr_thres
                         fscore = (enhchange[enh_id] / temax) * sum([_[1] for _ in glist]) / prev_max_fc
                     else:
                         fscore = abs(enhchange[enh_id] / temax) * sum([abs(_[1]) for _ in glist]) / prev_max_fc
-                print(f'{i[:-1]}\t{fscore}\t{bscore}')
+                
+                # modify here
+                if enh_id == '907':
+                    logger.debug(glist)
+                    header = header[:-1].split('\t')
+                    logger.debug(list(zip(header, line)))
+                    tmp = use_default_fscore(enh_id)
+                    logger.debug(f'nearest peak distance = {dis_to_p[enh_id]}')
+                    fdr_tmp = enhfdr.get(enh_id)
+                    change_tmp = enhchange.get(enh_id)
+                    logger.debug(f'use default fscore = {tmp}, enh FDR = {fdr_tmp}, enh chagne = {change_tmp}')
+                    tmp = sum([_[1] for _ in glist])
+                    tmp1 = sum([abs(_[1]) for _ in glist]) 
+                    logger.debug(f'linked change file = {fn_change}')
+                    logger.debug(f'enhchange = {enhchange[enh_id]},  temax = {temax}, fc_sum = {tmp}, fc_sum_abs = {tmp1}, prev_max_fc = {prev_max_fc}')
+                print(f'{i[:-1]}\t{fscore}\t{bscore}', file=o)
 
         df = pd.read_csv(fn_enhancer_prior, sep='\t')
         max_fscore = df['Fscore'].max()

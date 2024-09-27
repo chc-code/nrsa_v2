@@ -45,7 +45,7 @@ def getargs():
     ps.add_argument('-pri', help="""if set, will prioritize enhancer. default is false""", action='store_true')
     ps.add_argument('-peak', help="""required if -pri set. ChIP-seq peak file for the regulator of interest in bed format""")
     ps.add_argument('-lk', help=""" valid when -pri is set for two conditions. Transcriptional changes to be used for enhancer prioritization, the value can be pp (changes in promoter-proximal region), gb (changes in gene body region), or pindex (changes in pausing index) (default: gb)""", choices=["pp", "gb", "pindex"] , default='gb')
-    ps.add_argument('-dirction', help="""valid when -pri set  for two conditions. The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)""", type=int, choices=[-1, 0, 1], default=0)
+    ps.add_argument('-direction', help="""valid when -pri set  for two conditions. The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)""", type=int, choices=[-1, 0, 1], default=0)
     ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
     ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
     ps.add_argument('-demo', help="""skip HOMER makeTagDirectory if already done""", action='store_true')
@@ -585,33 +585,27 @@ def main(args):
     draw_signal(pwout, fn_enhancer_center, in1, in2, chr_map_to_raw_bed, signal_type=signal_type, demo=demo)
     
     # pause longeRNA
-    
     if lerna_out:
         logger.info(f'Detecting long eRNA change...')
         # perl pause_longeRNA.pl -o $out_dir -a $out3 -in1 $cond1_str -in2 $cond2_str -m $genome";
-        args = SimpleNamespace()
-        args.in1 = in1
-        args.in2 = in2
-        args.pwout = pwout
-        args.organism = organism
-        args.pw_bed = f'{pwout_raw}/bed'
-        args.pwout_raw = pwout_raw
-        args.gtf = fno_longerna
-        args.f1 = None
-        args.f2 = None  # the f1 and f2 are get from nf.txt
-        args.skip_get_mapped_reads = 1 if demo else 0
+        args_pause = SimpleNamespace()
+        args_pause.in1 = in1
+        args_pause.in2 = in2
+        args_pause.batches = args.batches
+        args_pause.pwout = pwout
+        args_pause.organism = organism
+        args_pause.pw_bed = f'{pwout_raw}/bed'
+        args_pause.pwout_raw = pwout_raw
+        args_pause.gtf = fno_longerna
+        args_pause.f1 = None
+        args_pause.f2 = None  # the f1 and f2 are get from nf.txt
+        args_pause.skip_get_mapped_reads = 1 if demo else 0
         logger.info('running pause longeRNA')
-        pause_longeRNA_main(args)
+        pause_longeRNA_main(args_pause)
 
-    
-    # ps.add_argument('-pri', help="""if set, will prioritize enhancer. default is false""", action='store_true')
-    # ps.add_argument('-peak', help="""required if -pri set. ChIP-seq peak file for the regulator of interest in bed format""")
-    # ps.add_argument('-lk', help=""" valid when -pri is set for two conditions. Transcriptional changes to be used for enhancer prioritization, the value can be pp (changes in promoter-proximal region), gb (changes in gene body region), or pindex (changes in pausing index) (default: gb)""", choices=["pp", "gb", "pindex"] , default='gb')
-    # ps.add_argument('-dirction', help="""valid when -pri set  for two conditions. The expected simultaneous change of expression between enhancers and target genes. 1: the expression changes of enhancers and target genes are in the same direction; -1: the expression changes of enhancers and target genes are in the opposite direction; 0: the expression changes of enhancers and target genes are either in the same or in the opposite direction (default: 0)""", type=int, choices=[-1, 0, 1], default=0)
-    # ps.add_argument('-wt', '-weight', help="""valid when -pri set for two conditions. Weight to balance the impact of binding and function evidence. The higher the weight, the bigger impact does the binding evidence have (default: 0.5, i.e., binding and functional evidence have equal impact on enhancer prioritization)""", type=float, default=0.5)
-    # ps.add_argument('-fdr', '-cf', help="""valid when -pri set for two conditions. Cutoff to select significant transcriptional changes (default: FDR < 0.05). Use Foldchange instead if no FDR is generated (default: Foldchange > 1.5)""", type=float, default=0.05)
 
-    
+
+    logger.debug(vars(args))
     if args.pri:
         fn_peak = args.peak
         if not os.path.exists(fn_peak):

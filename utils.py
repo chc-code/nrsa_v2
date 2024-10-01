@@ -2029,6 +2029,9 @@ def pre_count_for_bed(fn_lb, fn_out_bed, pw_bed, bin_size, reuse=True):
                         fatal = 1
                         break
                 continue
+            
+            # because we are examining where the transcript stops/pauses
+            # so we only care about the read end, no matter if we will use it in TSS or TTS or gene body calculation
             strand_idx, read_end = (0, int(e)) if strand == '+' else (1, int(s) + 1)
 
             chunk = read_end // bin_size
@@ -3028,7 +3031,8 @@ def parse_design_table(args):
                         if update_dict['in2']:
                             all_sams += [_ for _ in update_dict['in2']]
                         update_dict['batches'] = [batch_map[_] for _ in all_sams]
-                    
+                    else:
+                        update_dict['batches'] = None
                     comp_str = control if case == 'null' else f'{case}_vs_{control}'
                     pwout = os.path.join(pwout_raw, comp_str)
                     update_dict['pwout'] = pwout

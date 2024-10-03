@@ -3031,8 +3031,11 @@ def check_full_rank(condition, batches):
     """
     if the batch is fully correlated with condition, then, there is no need to add the batch column
     """
+    condition = [str(_) for _ in condition]
+    batches = [str(_) for _ in batches]
     df = pd.DataFrame({'condition': condition, 'batch': batches})
-    design_matrix = pd.get_dummies(df, drop_first=False)
+    # use drop_first=True
+    design_matrix = pd.get_dummies(df, drop_first=True)
     design_matrix = design_matrix.astype(float)
     rank = np.linalg.matrix_rank(design_matrix.values)
     return rank == design_matrix.shape[1]

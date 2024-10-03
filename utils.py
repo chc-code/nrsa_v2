@@ -250,18 +250,35 @@ def check_is_sorted(fn_bed):
                 return False
             last = start
     return True
-def get_ref_erna(organism, fn_gtf=None):
+def get_ref(organism, fn_gtf=None, fn_fa=None):
     # get the path of the reference files
     ref_files = {}
     pw_code = os.path.dirname(os.path.realpath(__file__))
+    # check if the folder is writable
+    if not os.access(pw_code, os.W_OK):
+        logger.warning(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
+        home = os.path.expanduser("~")
+        pw_code = f'{home}/.nrsa'
+        os.makedirs(pwout, exist_ok=True)
+    
     pw_ref = os.path.join(pw_code, 'ref')
     pw_fa = os.path.join(pw_code, 'fa')
     pw_annotation = os.path.join(pw_code, 'annotation')
     
+    # create the folders if not exists
+    for i in [pw_ref, pw_fa, pw_annotation]:
+        os.makedirs(i, exist_ok=True)
+    
     ref_files = {}
     ref_files["gtf"] = fn_gtf or os.path.join(pw_ref, organism, f"RefSeq-{organism}.gtf")
-
-    ref_files["fa"] = os.path.join(pw_fa, organism, f"{organism}.fa")
+    ref_files["fa"] = fn_fa or os.path.join(pw_fa, organism, f"{organism}.fa")
+    if fn_fa and os.path.exists(fn_fa):
+        # create a symlink to pw_fa
+        tmp1 = os.path.realpath(fn_fa)
+        tmp2 = os.path.realpath(ref_files["fa"])
+        if not os.path.exists(tmp2):
+            os.symlink(tmp1, tmp2)
+    
     
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
@@ -283,7 +300,7 @@ def get_ref_erna(organism, fn_gtf=None):
             ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
 
     # validite file existence
-    code = 0
+    need_download = {}
     for key, value in ref_files.items():
         if not value:
             continue
@@ -291,58 +308,26 @@ def get_ref_erna(organism, fn_gtf=None):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'
                 continue
-            
             if pw_annotation not in value:
                 if organism in {'mm10', 'hg19', 'hg38'}:
                     logger.warning(f"{organism} - {key}: '{value}' does not exist\n")
+                    need_download[key] = value
                 ref_files[key] = None
             else:
-                logger.error(f"{organism} - {key}: '{value}' does not exist\n")
-                code = 1
-    if code:
-        return None
+                logger.warning(f"{organism} - {key}: '{value}' does not exist\n")
+                need_download[key] = value
+    if need_download:
+        logger.warning(f'{len(need_download)} reference files need to be downloaded for {organism}...')
+        download_ref_files(organism, need_download)
     return ref_files
 
-def get_ref(organism, fa_in=None, gtf=None):
-    # hg19.chrom.sizes
-    # hg19_rCRS.fa
-    # hg19-tss-tts.txt
-    # RefSeq-hg19-exon-formatted.gtf
-    # RefSeq-hg19-tss-tts.txt
-    # RefSeq-hg19-tss.txt
-    # UCSC-hg19-exon-uniq-reformated-filter.gtf
-    # UCSC-hg19-filter-tss.txt
-    pw_code = os.path.dirname(os.path.realpath(__file__))
-    pw_ref = f'{pw_code}/ref'
-    
-    ref = {
-        'fa': f'{pw_code}/fa/{organism}/{organism}.fa',
 
-        'gtf': f'{pw_ref}/{organism}/RefSeq-{organism}.gtf', # use the new gtf file
-        # 'tss_filter': f'{pw_ref}/{organism}/UCSC-{organism}-filter-tss.txt',
-    }
-    
-    if fa_in:
-        ref['fa'] = fa_in
-    if gtf:
-        ref['gtf'] = gtf
-        
-    err = 0
-    not_found = []
-    for k in list(ref):
-        fn = ref[k]
-        if not os.path.exists(fn):
-            if os.path.exists(f'{fn}.gz'):
-                ref[k] = f'{fn}.gz'
-            else:
-                not_found.append(f'{k}: {fn}')
-                err = 1
-    if err:
-        logger.error(f"the following files are not found:")
-        print('\n\t'.join(not_found))
-        return None
+def download_ref_files(organism, need_download):
+    """
+    download the missing reference files
+    """
+    pass
 
-    return ref
 
 def bench(s, lb, d):
     now = time.time()
@@ -2665,15 +2650,12 @@ class Analysis:
             self.longerna_flag_str = ''
             self.longerna_prefix = ''
         # ref files
-        fa_in = args.fa
+        fa_in = vars(args).get('fa')
         if fa_in and os.path.exists(fa_in):
             if not fa_in.endswith('.fa'):
                 logger.error(f"Invalid fasta file provided, file extension should be .fa in plain text. input = {fa_in}")
                 self.status = 1
-        if is_long_eRNA:
-            ref_fls = get_ref_erna(self.organism, fn_gtf=args.gtf)
-        else:
-            ref_fls = get_ref(self.organism, fa_in=fa_in, gtf=args.gtf)
+        ref_fls = get_ref(self.organism, fn_gtf=args.gtf, fa_in=fa_in)
         if ref_fls is None:
             logger.error("Error encountered while retrieving reference files")
             self.status = 1

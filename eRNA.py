@@ -157,7 +157,7 @@ def updatelogger(logger, fn_log, terminal_level=None):
 logger = getlogger(logger_name='NRSA')
 
 
-from utils import process_input, check_dependency, get_ref_erna, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util, parse_design_table, pause_longeRNA_main, prioritize_enhancer
+from utils import process_input, check_dependency, get_ref, process_gtf, gtf_compare, get_other_region, get_enhancer, refine_chr, run_shell, sort_bed_like_file, change_enhancer, draw_signal, time_cost_util, parse_design_table, pause_longeRNA_main, prioritize_enhancer
 
 
 def main(args):
@@ -176,7 +176,7 @@ def main(args):
 
     status = 0
     logger.debug('start running')
-    ref_fls = get_ref_erna(args.organism)
+    ref_fls = get_ref(args.organism)
     if ref_fls is None:
         logger.error("Error encountered while retrieving reference files")
         status = 1

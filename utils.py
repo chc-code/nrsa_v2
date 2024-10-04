@@ -278,10 +278,10 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
             builtin_organisms += organism_extra
     
     organism_lower = organism.lower()
-    fn_gtf_exp = f'{pw_code}/ref/organism/RefSeq-{organism}.gtf'
-    fn_fa_exp = f'{pw_code}/fa/organism/{organism}.fa'
-    fn_gtf_exp_write = f'{pw_code_write}/ref/organism/RefSeq-{organism}.gtf'
-    fn_fa_exp_write = f'{pw_code_write}/fa/organism/{organism}.fa'
+    fn_gtf_exp = f'{pw_code}/ref/{organism}/RefSeq-{organism}.gtf'
+    fn_fa_exp = f'{pw_code}/fa/{organism}/{organism}.fa'
+    fn_gtf_exp_write = f'{pw_code_write}/ref/{organism}/RefSeq-{organism}.gtf'
+    fn_fa_exp_write = f'{pw_code_write}/fa/{organism}/{organism}.fa'
     
     
     ref_files = {}
@@ -360,7 +360,8 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
                 need_download[key] = value
     if need_download:
         logger.warning(f'{len(need_download)} reference files need to be downloaded for {organism}...')
-        download_ref_files(organism, need_download)
+        logger.debug(need_download)
+        ref_files = download_ref_files(organism, need_download, ref_files)
     return ref_files
 
 
@@ -374,7 +375,7 @@ def download_file_task(url, save_path):
         logger.error(f"Error downloading the file - {save_path}: {e}")
         return 1
 
-def download_ref_files(organism, need_download):
+def download_ref_files(organism, need_download, ref_files):
     """
     download the missing reference files
     """
@@ -391,8 +392,11 @@ def download_ref_files(organism, need_download):
         status = download_file_task(url_full, fn_dest)
         if status:
             err = 1
+        else:
+            ref_files[key] = fn_dest
     if err:
         sys.exit(1)
+    return ref_files
 
 def bench(s, lb, d):
     now = time.time()

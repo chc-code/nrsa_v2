@@ -21,6 +21,7 @@ from statsmodels.stats.multitest import multipletests
 import statsmodels.stats.contingency_tables as contingency_tables
 from scipy.stats import chi2
 import warnings
+import urllib.request
 
 pw_code = os.path.dirname(os.path.realpath(__file__))
 inf_neg = float('-inf')
@@ -261,6 +262,46 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         pw_code = f'{home}/.nrsa'
         os.makedirs(pwout, exist_ok=True)
     
+    # if the organism is not in the list, check fn_gtf and fn_fa, if either is None, return None, otherwise, use it and create a folder in pw_code/ref and pw_code/fa and create symlink
+    builtin_organisms = ['ce10', 'dm3', 'dm6', 'hg19', 'hg38', 'mm10', 'danrer10']
+    fn_extra_org = f'{pw_code}/ref/extra_organisms.json'
+    
+    if os.path.exists(fn_extra_org):
+        with open(fn_extra_org) as f:
+            organism_extra = json.load(f)
+            builtin_organisms += organism_extra
+    else:
+        organism_extra = []
+    
+    organism_lower = organism.lower()
+    fn_gtf_exp = f'{pw_code}/ref/organism/RefSeq-{organism}.gtf'
+    fn_fa_exp = f'{pw_code}/fa/organism/{organism}.fa'
+    if organism_lower not in builtin_organisms:
+        if fn_gtf is None or fn_fa is None:
+            logger.error(f'New organism: {organism}, please provide the gtf and fa file by -gtf and -fa options')
+            sys.exit(1)
+        err = 0
+        if not os.path.exists(fn_gtf):
+            logger.error(f'GTF file not exist: {fn_gtf}')
+            err = 1
+        if not os.path.exists(fn_fa):
+            logger.error(f'FA file not exist: {fn_fa}')
+            err = 1
+        if err:
+            sys.exit(1)
+        organism = organism_lower
+        # create the folders if not exists and create the symlink
+        for i in ['ref', 'fa']:
+            os.makedirs(f'{pw_code}/{i}', exist_ok=True)
+        fn_gtf = os.path.realpath(fn_gtf)
+        fn_fa = os.path.realpath(fn_fa)
+        
+        os.symlink(fn_gtf, fn_gtf_exp)
+        os.symlink(fn_fa, fn_fa_exp)
+        organism_extra.append(organism)
+        with open(fn_extra_org, 'w') as o:
+            json.dump(organism_extra, o)
+    
     pw_ref = os.path.join(pw_code, 'ref')
     pw_fa = os.path.join(pw_code, 'fa')
     pw_annotation = os.path.join(pw_code, 'annotation')
@@ -270,16 +311,15 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         os.makedirs(i, exist_ok=True)
     
     ref_files = {}
-    ref_files["gtf"] = fn_gtf or os.path.join(pw_ref, organism, f"RefSeq-{organism}.gtf")
-    ref_files["fa"] = fn_fa or os.path.join(pw_fa, organism, f"{organism}.fa")
+    ref_files["gtf"] = fn_gtf or fn_gtf_exp
+    ref_files["fa"] = fn_fa or fn_fa_exp
     if fn_fa and os.path.exists(fn_fa):
         # create a symlink to pw_fa
         tmp1 = os.path.realpath(fn_fa)
         tmp2 = os.path.realpath(ref_files["fa"])
         if not os.path.exists(tmp2):
             os.symlink(tmp1, tmp2)
-    
-    
+
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
         'mm10': ['mouse_permissive_enhancers_phase_1_and_2.bed', None],
@@ -322,12 +362,35 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     return ref_files
 
 
+def download_file_task(url, save_path):
+    try:
+        urllib.request.urlretrieve(url, save_path)
+        logger.info(f"File downloaded successfully and saved to {save_path}")
+        return 0
+    except:
+        e = traceback.format_exc()
+        logger.error(f"Error downloading the file - {save_path}: {e}")
+        return 1
+
 def download_ref_files(organism, need_download):
     """
     download the missing reference files
     """
-    pass
-
+    builtin_organisms = ['ce10', 'dm3', 'dm6', 'hg19', 'hg38', 'mm10', 'danrer10']
+    if organism not in builtin_organisms:
+        logger.error(f'organism {organism} not in the builtin list, please provide the gtf and fa file')
+        sys.exit(1)
+    url_base = 'https://bioinfo.vanderbilt.edu/NRSA/download/NRSA'
+    err = 0
+    for key, fn_dest in need_download.items():
+        slug = {'gtf': organism, 'fa': 'fa', 'fantom': 'annotation', 'association': 'annotation', '4d': 'annotation'}[key]
+        base_name = os.path.basename(fn_dest)
+        url_full = f'{url_base}/{slug}/{base_name}'
+        status = download_file_task(url_full, fn_dest)
+        if status:
+            err = 1
+    if err:
+        sys.exit(1)
 
 def bench(s, lb, d):
     now = time.time()

@@ -6,12 +6,13 @@ def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
+    ps.add_argument('-in1', help="""required if -design_table is not specified, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='+')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
+    ps.add_argument('-pwout', '-output', help="""required, output/work directory""", required=True)
+    ps.add_argument('-organism', '-org',  help="""required. define the genome: built-in = hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. if other organism used, must also specify the -gtf and -fa""", required=True)
+
     ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
     ps.add_argument('-batches', '-batch', '-b',  help="""Optional, if -in1 / -in2 is specified, and the need to adjust the batch effect, add the batch label for each sample. the total argument number should match with in1 + in2, sep = space""", nargs='*')
-    ps.add_argument('-pwout', '-output', help="""required, output/work directory""", required=True)
-    ps.add_argument('-organism', '-org',  help="""required, define the genome. Valid is hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", required=True)
 
     ps.add_argument('-gtf', help="""user specified GTF file, if not specified, will use the default GTF file for the organism""")
     ps.add_argument('-fa', help="""Full path for the fasta file for the genome. If not specified, will search under the fa folder under the package directory. e.g. organism is hg19, then the default fasta file should be fa/hg19.fa""")

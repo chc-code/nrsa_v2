@@ -26,14 +26,15 @@ def getargs():
     import argparse as arg
     from argparse import RawTextHelpFormatter
     ps = arg.ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    ps.add_argument('-in1', help="""required, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='*')
+    ps.add_argument('-in1', help="""required if design table is not specified, read alignment files in bed (6 columns) or bam format for condition1, separated by space""", nargs='*')
     ps.add_argument('-in2', help="""read alignment files in bed (6 columns) or bam format for condition2, separated by space""", nargs='*')
+    ps.add_argument('-pwout', help="""Required. work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
+    ps.add_argument('-organism', '-m', '-org',  help="""Required. define the genome: built-in = hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. if other organism used, must also specify the -gtf and -fa""", required=True)
+
     ps.add_argument('-design_table', '-design',  help="""Optional, desgin table in tsv format. 2 sections, first section is the sample information, 2 columns. col1=bed/bam full file path, col2 = group name. Second section is the comparison information, 2 columns, col1 should start with @@ used to identify this line as comparison definition. col1=group name used as case, col2 = group name used as control. e.g. @@case\\tcontrol. If only need to process a single group, use @@null\\tgroup_name""", nargs='?')
 
-    ps.add_argument('-pwout', help="""work directory, should be the same of pause_PROseq.pl\'s output/work directory""", required=True)
-    ps.add_argument('-organism', '-m', '-org',  help="""define the genome: hg19, hg38, mm10, dm3, dm6, ce10, or danRer10. default: hg19""", choices=['hg19', 'hg38', 'mm10', 'dm3', 'dm6', 'ce10', 'danRer10'], required=True)
     ps.add_argument('-gtf', help='Customized GTF file path, if not specified, will use the default one for the organism')
-
+    ps.add_argument('-fa', help="""Customized fasta file for the organism""")
     # ps.add_argument('-overlap_frac', '-p', help="""percentage of overlap for calling annotated gene, float, default=0.2""", type=float, default=0.2)
     ps.add_argument('-cutoff', '-c', help="""distance cutoff for divergent transcripts for enhancer detection (bp, default: 400)""", type=int, default=400)
     ps.add_argument('-distance', '-d', help="""distance within which two eRNAs are merged (bp, default: 500)""", type=int, default=500)
@@ -172,11 +173,12 @@ def main(args):
     pwout = args.pwout
     pwout = os.path.realpath(pwout)
     fn_gtf = args.gtf
+    fn_fa = args.fa
     pwout_raw = args_d.get('pwout_raw', pwout)
 
     status = 0
     logger.debug('start running')
-    ref_fls = get_ref(args.organism)
+    ref_fls = get_ref(args.organism, fn_gtf=fn_gtf, fn_fa=fn_fa)
     if ref_fls is None:
         logger.error("Error encountered while retrieving reference files")
         status = 1

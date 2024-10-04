@@ -257,25 +257,35 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     pw_code = os.path.dirname(os.path.realpath(__file__))
     # check if the folder is writable
     if not os.access(pw_code, os.W_OK):
-        logger.warning(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
+        # logger.warning(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
         home = os.path.expanduser("~")
-        pw_code = f'{home}/.nrsa'
-        os.makedirs(pwout, exist_ok=True)
+        pw_code_write = f'{home}/.nrsa'
+        os.makedirs(pw_code, exist_ok=True)
+    else:
+        pw_code_write = pw_code
     
+    # create the folders if not exists
+    for i in ['ref', 'fa', 'annotation']:
+        os.makedirs(f'{pw_code_write}/i', exist_ok=True)
+        
     # if the organism is not in the list, check fn_gtf and fn_fa, if either is None, return None, otherwise, use it and create a folder in pw_code/ref and pw_code/fa and create symlink
     builtin_organisms = ['ce10', 'dm3', 'dm6', 'hg19', 'hg38', 'mm10', 'danrer10']
-    fn_extra_org = f'{pw_code}/ref/extra_organisms.json'
+    fn_extra_org = f'{pw_code_write}/ref/extra_organisms.txt'
     
     if os.path.exists(fn_extra_org):
         with open(fn_extra_org) as f:
-            organism_extra = json.load(f)
+            organism_extra = [_.strip().lower() for _ in f if _.strip()]
             builtin_organisms += organism_extra
-    else:
-        organism_extra = []
     
     organism_lower = organism.lower()
     fn_gtf_exp = f'{pw_code}/ref/organism/RefSeq-{organism}.gtf'
     fn_fa_exp = f'{pw_code}/fa/organism/{organism}.fa'
+    fn_gtf_exp_write = f'{pw_code_write}/ref/organism/RefSeq-{organism}.gtf'
+    fn_fa_exp_write = f'{pw_code_write}/fa/organism/{organism}.fa'
+    
+    
+    ref_files = {}
+    need_download = {}
     if organism_lower not in builtin_organisms:
         if fn_gtf is None or fn_fa is None:
             logger.error(f'New organism: {organism}, please provide the gtf and fa file by -gtf and -fa options')
@@ -291,35 +301,26 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
             sys.exit(1)
         organism = organism_lower
         # create the folders if not exists and create the symlink
-        for i in ['ref', 'fa']:
-            os.makedirs(f'{pw_code}/{i}', exist_ok=True)
         fn_gtf = os.path.realpath(fn_gtf)
         fn_fa = os.path.realpath(fn_fa)
         
-        os.symlink(fn_gtf, fn_gtf_exp)
-        os.symlink(fn_fa, fn_fa_exp)
-        organism_extra.append(organism)
-        with open(fn_extra_org, 'w') as o:
-            json.dump(organism_extra, o)
-    
-    pw_ref = os.path.join(pw_code, 'ref')
-    pw_fa = os.path.join(pw_code, 'fa')
-    pw_annotation = os.path.join(pw_code, 'annotation')
-    
-    # create the folders if not exists
-    for i in [pw_ref, pw_fa, pw_annotation]:
-        os.makedirs(i, exist_ok=True)
-    
-    ref_files = {}
-    ref_files["gtf"] = fn_gtf or fn_gtf_exp
-    ref_files["fa"] = fn_fa or fn_fa_exp
-    if fn_fa and os.path.exists(fn_fa):
-        # create a symlink to pw_fa
-        tmp1 = os.path.realpath(fn_fa)
-        tmp2 = os.path.realpath(ref_files["fa"])
-        if not os.path.exists(tmp2):
-            os.symlink(tmp1, tmp2)
+        logger.warning(f'new organism input, if you want to reuse this gtf / fa combination by specify -organism option, you can add the organism name as a new line in {fn_extra_org} and create symlink of gtf and fa files to\n{fn_gtf_exp_write}\n{fn_fa_exp_write}')
 
+        ref_files['gtf'] = fn_gtf
+        ref_files['fa'] = fn_fa
+        
+    else:
+        # get the gtf and fa file of known genome
+        for k, flist in [['gtf', [fn_gtf_exp, fn_gtf_exp_write]], ['fa', [fn_fa_exp, fn_fa_exp_write]]]:
+            found = 0
+            for fn in flist:
+                if os.path.exists(fn):
+                    ref_files[k] = fn
+                    found = 1
+                    break
+            if not found:
+                need_download[k] = flist[0]
+        
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
         'mm10': ['mouse_permissive_enhancers_phase_1_and_2.bed', None],
@@ -330,17 +331,17 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     # 4d, dm3, dm6, hg19, hg38, mm10
     # chr1	557489	560146	chr5	134284878	134293544	PCBD2;	MCF7	ChIA-PET	19890323
     if organism in ['dm3', 'dm6', 'hg19', 'hg38', 'mm10']:
-        ref_files['4d'] = f'{pw_annotation}/4DGenome-{organism}.txt'
+        ref_files['4d'] = f'{pw_code}/annotation/4DGenome-{organism}.txt'
     else:
         ref_files['4d'] = None
     
     if ref_files['fantom']:
-        ref_files["fantom"] = os.path.join(pw_annotation, ref_files["fantom"])
+        ref_files["fantom"] = f'{pw_code}/annotation/{ref_files["fantom"]}'
         if ref_files['association']:
-            ref_files['association'] = os.path.join(pw_annotation, ref_files['association'])
+            ref_files['association'] = f'{pw_code}/annotation/{ref_files["association"]}'
 
     # validite file existence
-    need_download = {}
+    
     for key, value in ref_files.items():
         if not value:
             continue
@@ -348,13 +349,14 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'
                 continue
-            if pw_annotation not in value:
+            tmp = value.split('/')
+            if len(tmp) > 1 and tmp[-2] == 'annotation':
                 if organism in {'mm10', 'hg19', 'hg38'}:
-                    logger.warning(f"{organism} - {key}: '{value}' does not exist\n")
+                    logger.warning(f"annotation file not exist: {organism} - {key}: '{value}'\n")
                     need_download[key] = value
                 ref_files[key] = None
             else:
-                logger.warning(f"{organism} - {key}: '{value}' does not exist\n")
+                logger.warning(f"{organism} - {key}: '{value}'  not exist\n")
                 need_download[key] = value
     if need_download:
         logger.warning(f'{len(need_download)} reference files need to be downloaded for {organism}...')
@@ -2718,7 +2720,7 @@ class Analysis:
             if not fa_in.endswith('.fa'):
                 logger.error(f"Invalid fasta file provided, file extension should be .fa in plain text. input = {fa_in}")
                 self.status = 1
-        ref_fls = get_ref(self.organism, fn_gtf=args.gtf, fa_in=fa_in)
+        ref_fls = get_ref(self.organism, fn_gtf=args.gtf, fn_fa=fa_in)
         if ref_fls is None:
             logger.error("Error encountered while retrieving reference files")
             self.status = 1

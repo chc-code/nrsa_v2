@@ -2636,7 +2636,10 @@ def change_enhancer(pwout, fn_count_enhancer, factors_d, n_ctrl, n_case, sam_ctr
     if condition == 1:
         # no case samples
         if n_ctrl == 1:
-            retcode = run_shell(f'cp {fn_count_enhancer} {fn_norm}')
+            try:
+                os.symlink(fn_count_enhancer, fn_norm)
+            except:
+                logger.warning(f'fail to create symlink from {fn_count_enhancer} to {fn_norm}')
         else:
             pass # save norm data at the end
     else:

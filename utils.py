@@ -257,7 +257,7 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     pw_code = os.path.dirname(os.path.realpath(__file__))
     # check if the folder is writable
     if not os.access(pw_code, os.W_OK):
-        # logger.warning(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
+        logger.debug(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
         home = os.path.expanduser("~")
         pw_code_write = f'{home}/.nrsa'
         os.makedirs(pw_code, exist_ok=True)
@@ -266,7 +266,7 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     
     # create the folders if not exists
     for i in ['ref', 'fa', 'annotation']:
-        os.makedirs(f'{pw_code_write}/i', exist_ok=True)
+        os.makedirs(f'{pw_code_write}/{i}', exist_ok=True)
         
     # if the organism is not in the list, check fn_gtf and fn_fa, if either is None, return None, otherwise, use it and create a folder in pw_code/ref and pw_code/fa and create symlink
     builtin_organisms = ['ce10', 'dm3', 'dm6', 'hg19', 'hg38', 'mm10', 'danrer10']
@@ -341,13 +341,18 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
             ref_files['association'] = f'{pw_code}/annotation/{ref_files["association"]}'
 
     # validite file existence
-    
-    for key, value in ref_files.items():
+    for key in ref_files:
+        value = ref_files[key]
         if not value:
             continue
         if not os.path.exists(value):
             if os.path.exists(f'{value}.gz'):
                 ref_files[key] = f'{value}.gz'
+                continue
+            # if exist in pw_code_write
+            fn_new = value.replace(f'{pw_code}/', f'{pw_code_write}/')
+            if pw_code != pw_code_write and os.path.exists(fn_new):
+                ref_files[key] = fn_new
                 continue
             tmp = value.split('/')
             if len(tmp) > 1 and tmp[-2] == 'annotation':
@@ -358,9 +363,15 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
             else:
                 logger.warning(f"{organism} - {key}: '{value}'  not exist\n")
                 need_download[key] = value
+    need_download = {k: v.replace(f'{pw_code}/', f'{pw_code_write}/') for k, v in need_download.items()}
+    logger.debug(need_download)
     if need_download:
         logger.warning(f'{len(need_download)} reference files need to be downloaded for {organism}...')
         logger.debug(need_download)
+        folders = {os.path.dirname(fn) for fn in need_download.values()}
+        logger.debug(f'folders needed = {folders}')
+        for ipw in folders:
+            os.makedirs(ipw, exist_ok=True)
         ref_files = download_ref_files(organism, need_download, ref_files)
     return ref_files
 
@@ -401,7 +412,16 @@ def download_ref_files(organism, need_download, ref_files):
     err = 0
     
     url_md5sum = f'{url_base}/files_md5sum.json'
-    fn_md5sum_local = f'{pw_code}/ref/files_md5sum.json'
+    if not os.access(pw_code, os.W_OK):
+        logger.debug(f'no write permission to the folder of the code: {pw_code}, will write to $HOME/.nrsa')
+        home = os.path.expanduser("~")
+        pw_code_write = f'{home}/.nrsa'
+        os.makedirs(pw_code, exist_ok=True)
+        os.makedirs(pw_code + '/ref', exist_ok=True)
+    else:
+        pw_code_write = pw_code    
+    
+    fn_md5sum_local = f'{pw_code_write}/ref/files_md5sum.json'
     status = download_file_task(url_md5sum, fn_md5sum_local)
     if status:
         logger.warning(f'MD5 checksum file not downloaded: {url_md5sum}')
@@ -1878,9 +1898,12 @@ def process_gtf(fn_gtf, pwout):
         logger.error(f'the gtf file should have the extension of .gtf: {fn_gtf}')
         sys.exit(1)
         return None, fn_tss, fn_tss_tts, err
-    
+    fn_gtf_pkl_default = f'{os.path.dirname(fn_gtf)}/{fn_gtf_lb}.gtf_info.pkl'
     fn_gtf_pkl = f'{gtf_pwout}/{fn_gtf_lb}.gtf_info.pkl'
     fn_gtf_meta_json = f'{gtf_pwout}/{fn_gtf_lb}.gtf_meta.json'
+    
+    if os.path.exists(fn_gtf_pkl_default):
+        fn_gtf_pkl = fn_gtf_pkl_default
     if os.path.exists(fn_gtf_pkl):
         logger.debug(f'loading gtf from pickle: {fn_gtf_pkl}')
         

@@ -364,10 +364,24 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         ref_files = download_ref_files(organism, need_download, ref_files)
     return ref_files
 
+def get_md5(fn):
+    import hashlib
+    with open(fn, "rb") as f:
+        md5 = hashlib.md5()
+        while chunk := f.read(8192):
+            md5.update(chunk)
+    return md5.hexdigest()
 
-def download_file_task(url, save_path):
+def download_file_task(url, save_path, md5_exp=None):
     try:
         urllib.request.urlretrieve(url, save_path)
+        # check the md5sum
+        if md5_exp:
+            logger.info(f'Calculating md5 for {save_path}')
+            md5_actual = get_md5(save_path)
+            if md5_actual != md5_exp:
+                logger.error(f"MD5 not match: {save_path}, expected = {md5_exp}, actual = {md5_actual}")
+                return 1
         logger.info(f"File downloaded successfully and saved to {save_path}")
         return 0
     except:
@@ -385,11 +399,23 @@ def download_ref_files(organism, need_download, ref_files):
         sys.exit(1)
     url_base = 'https://bioinfo.vanderbilt.edu/NRSA/download/NRSA'
     err = 0
+    
+    url_md5sum = f'{url_base}/files_md5sum.json'
+    fn_md5sum_local = f'{pw_code}/ref/files_md5sum.json'
+    status = download_file_task(url_md5sum, fn_md5sum_local)
+    if status:
+        logger.warning(f'MD5 checksum file not downloaded: {url_md5sum}')
+        md5sum_all = {}
+    else:
+        with open(fn_md5sum_local) as f:
+            md5sum_all = json.load(f)
+    
     for key, fn_dest in need_download.items():
         slug = {'gtf': organism, 'fa': 'fa', 'fantom': 'annotation', 'association': 'annotation', '4d': 'annotation'}[key]
         base_name = os.path.basename(fn_dest)
+        md5_exp = md5sum_all.get(base_name)
         url_full = f'{url_base}/{slug}/{base_name}'
-        status = download_file_task(url_full, fn_dest)
+        status = download_file_task(url_full, fn_dest, md5_exp)
         if status:
             err = 1
         else:

@@ -264,6 +264,8 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     else:
         pw_code_write = pw_code
     
+    logger.debug(f'pw_code = {pw_code}, pw_code_write = {pw_code_write}, pw_code writeable = {os.access(pw_code, os.W_OK)}')
+
     # create the folders if not exists
     for i in ['ref', 'fa', 'annotation']:
         os.makedirs(f'{pw_code_write}/{i}', exist_ok=True)
@@ -311,9 +313,11 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         
     else:
         # get the gtf and fa file of known genome
-        for k, flist in [['gtf', [fn_gtf_exp, fn_gtf_exp_write]], ['fa', [fn_fa_exp, fn_fa_exp_write]]]:
+        for k, flist in [['gtf', [fn_gtf, fn_gtf_exp, fn_gtf_exp_write]], ['fa', [fn_fa, fn_fa_exp, fn_fa_exp_write]]]:
             found = 0
             for fn in flist:
+                if fn is None:
+                    continue
                 if os.path.exists(fn):
                     ref_files[k] = fn
                     found = 1

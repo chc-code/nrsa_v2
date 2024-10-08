@@ -265,6 +265,7 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         pw_code_write = pw_code
     
     logger.debug(f'pw_code = {pw_code}, pw_code_write = {pw_code_write}, pw_code writeable = {os.access(pw_code, os.W_OK)}')
+    
 
     # create the folders if not exists
     for i in ['ref', 'fa', 'annotation']:
@@ -285,6 +286,18 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
     fn_gtf_exp_write = f'{pw_code_write}/ref/{organism}/RefSeq-{organism}.gtf'
     fn_fa_exp_write = f'{pw_code_write}/fa/{organism}/{organism}.fa'
     
+    if fn_fa and not os.path.exists(fn_fa_exp_write):
+        os.makedirs(os.path.dirname(fn_fa_exp_write), exist_ok=True)
+        try:
+            os.symlink(fn_fa, fn_fa_exp_write)
+        except:
+            pass
+    if fn_gtf and not os.path.exists(fn_gtf_exp_write):
+        os.makedirs(os.path.dirname(fn_gtf_exp_write), exist_ok=True)
+        try:
+            os.symlink(fn_gtf, fn_gtf_exp_write)
+        except:
+            pass
     
     ref_files = {}
     need_download = {}
@@ -323,7 +336,7 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
                     found = 1
                     break
             if not found:
-                need_download[k] = flist[0]
+                need_download[k] = flist[1]
         
     ref_files["fantom"], ref_files['association'] = {
         'hg19': ["human_permissive_enhancers_phase_1_and_2.bed", "human_enhancer_tss_associations.bed"],
@@ -377,6 +390,8 @@ def get_ref(organism, fn_gtf=None, fn_fa=None):
         for ipw in folders:
             os.makedirs(ipw, exist_ok=True)
         ref_files = download_ref_files(organism, need_download, ref_files)
+    tmp = json.dumps(ref_files, indent=3)
+    logger.debug(tmp)
     return ref_files
 
 def get_md5(fn):

@@ -1,0 +1,29 @@
+
+**a: sample with different size**
+/workspace/wangj52/PROseq-data/
+AML-GSE83660/GSM2212051_sorted_rRNArm-F4q10.bam
+Bcell-GM12004-GSM980646/bams/GSM980646-GM12004_PROseq_sorted_rRNArm-F4q10.bam
+CD4-GSM1613181/bams/CD4-PRO-UT.rRNArm.F4q10.sorted.bam
+Daudi-Pankaj/bams/Daudi-PRO-DMSO.rRNArm.F4q10.sorted.bam
+K562-GSM1480327/bams/K562-PRO-UT.rRNArm.F4q10.sorted.bam
+
+
+**b: same dataset different gtf**
+Gtf: https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/genes/
+      hg19.ensGene.gtf.gz       2020-01-10 09:45   26M  
+      hg19.knownGene.gtf.gz     2024-04-25 10:23   35M  
+      hg19.ncbiRefSeq.gtf.gz    2021-05-17 10:35   19M  
+      hg19.refGene.gtf.gz       2020-01-10 09:45   21M 
+Dataset: /nobackup/tansey_lab/from-nobackup-h_vangard_1-wangj52-Bill/Andrea-G401-KYM-PROseq/bowtie2-recover/result/
+G401_DMSO:4104-AW-1, 4104-AW-3 vs. G401_584: 4104-AW-2, 4104-AW-4
+
+**c: same dataset different sample numbers**
+Dataset: same as in b., but duplicate… samples
+2 vs. 2
+4 vs. 4 (just use same samples twice)
+8 vs. 8 (just use same samples four times)
+16 vs. 16 (just use same samples 8 times)
+
+**d-e: repeat a-c but measure the memory used**
+
+
